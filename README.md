@@ -55,4 +55,4 @@ utils_md.load_weights(model, weights_path)
 ```
 
 ### Visualization
-*TODO: Notebook with details*
+See `viz_and_eval.ipynb`
