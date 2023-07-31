@@ -261,12 +261,10 @@ def train(args):
     # endregion training
 
     # region save model weights
-    model_save_directory = args.model_save_directory
+    model_save_directory = args.model_save_directory.parent
     if not os.path.exists(model_save_directory):
         os.makedirs(model_save_directory)
-    save_path = model_save_directory + \
-        f'md_{seq_length}_{args.num_training_iterations:.2e}_' \
-        f'{num_time_steps}_{step_size}_{connectivity_radius}/weights'
+    save_path = model_save_directory + args.model_save_directory.child
     checkpoint = tf.train.Checkpoint(module=model)
     print(checkpoint.save(save_path))
     # endregion save model weights

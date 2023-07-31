@@ -47,7 +47,8 @@ During training, the following are printed to the terminal:
 - 1-step loss on training set
 - Rollout loss on test-set
   
-After training, the model's weights will be saved in a directory set by `args.model_save_direcotry` (default is `./models`) which can be later be accessed by the following:
+
+After training, the model's weights will be saved in a directory set by `args.model_save_directory` (default is `./models`) which can be later be accessed by the following:
 ```
 model = learned_graph_simulator.LearnedSimulator(...)  # where ... are the required parameters to define the model
 weights_path = 'path_to_model_weights'  # this path is printed to the terminal at the end of training

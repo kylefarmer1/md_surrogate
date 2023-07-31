@@ -33,6 +33,6 @@ num_training_iterations: 10000
 # when loading or saving weights, the following paths are concatenated, thus place directory delimiters appropriately
 model_save_directory:
   parent: models/
-  child: demo/
+  child: demo/weights
 
 

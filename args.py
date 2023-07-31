@@ -25,7 +25,7 @@ The values of the arguments can be modified in 4 different ways:
 """
 import argparse
 import yaml
-DEFAULT_CONFIG = './config_2.yaml'
+DEFAULT_CONFIG = './config.yaml'
 STRING_OPTIONS = [
     'model_save_directory'
 ]
