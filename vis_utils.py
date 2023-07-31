@@ -78,7 +78,7 @@ def animate_trajectory(rollout, system_size, title=None, outpath='movie', fps=5)
     plt.close()
 
 
-def animate_two_trajectory(rollout1, rollout2, system_size, titles=None, outpath='movie', fps=5):
+def animate_two_trajectory(rollout1, rollout2, system_size, titles=None, outpath='movie', gif=False, fps=5):
     """animate two trajectories side by side
 
     Animates the trajectories of two rollouts side by side. Meant to compare the trajectories from the simulator and
@@ -89,7 +89,8 @@ def animate_two_trajectory(rollout1, rollout2, system_size, titles=None, outpath
     :param rollout2: array of T x N x 2 (num_steps x num_atoms x [pos_x, pos_y]
     :param system_size: array([[xlo, ylo],[xhi, yhi]])
     :param titles: list of size 2, corresponding to the titles of each graph
-    :param outpath: str of outpath without the suffic (without .mp4)
+    :param outpath: str of outpath without the suffix (without .mp4/gif)
+    :param gif: boolean; save as a gif (else save as mp4)
     :param fps: int; frames per second
     :return:
     """
@@ -153,8 +154,13 @@ def animate_two_trajectory(rollout1, rollout2, system_size, titles=None, outpath
 
     ani = matplotlib.animation.FuncAnimation(fig, animate, frames=num_steps,
                                              interval=interval, repeat=True)
-    writer = matplotlib.animation.FFMpegWriter(fps=fps)
-    ani.save(f'{outpath}'+'.mp4', writer=writer)
+    if gif:
+        writer = matplotlib.animation.PillowWriter(fps=fps)
+        outpath = outpath + '.gif'
+    else:
+        writer = matplotlib.animation.FFMpegWriter(fps=fps)
+        outpath = outpath + '.mp4'
+    ani.save(outpath, writer=writer)
     plt.close()
 
 
@@ -285,14 +291,14 @@ def plot_losses(loss1, loss2, ax):
     ax2 = ax.twinx()
 
     num_steps = loss1.shape[0]
-    colors = ['xkcd:blue', 'xkcd:orange']
+    colors = ['#003f5c', '#ffa600']
 
-    line, = ax.plot(np.arange(num_steps), loss1, c=colors[0])
-    line2, = ax2.plot(np.arange(num_steps), loss2, c=colors[1])
+    line, = ax.plot(np.arange(num_steps), loss1, c=colors[0], label='rollout')
+    line2, = ax2.plot(np.arange(num_steps), loss2, c=colors[1], label='one-step')
 
     ax.set_xlabel('step', fontsize=20)
-    ax.set_ylabel('Rollout loss', color=colors[0], fontsize=20)
-    ax2.set_ylabel('One-step loss', color=colors[1], fontsize=20)
+    ax.set_ylabel('rollout loss', color=colors[0], fontsize=20)
+    ax2.set_ylabel('one-step loss', color=colors[1], fontsize=20)
     ax.tick_params(axis='both', which='major', labelsize=15, direction='in')
     ax2.tick_params(axis='both', which='major', labelsize=15, direction='in')
 
@@ -321,7 +327,7 @@ def plot_energies(energies1, ax, energies2=None):
         ax.plot(steps, energies2[:, 1], linestyle='dashed', c=colors[1],)
         ax.plot(steps, energies2[:, 0] + energies2[:, 1], linestyle='dashed', c=colors[2],)
 
-    ax.set_xlabel('steps', fontsize=20)
+    ax.set_xlabel('step', fontsize=20)
     ax.set_ylabel('energy', fontsize=20)
     ax.tick_params(axis='both', which='major', labelsize=15, direction='in')
     ax.legend()

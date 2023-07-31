@@ -232,7 +232,7 @@ def apply_noise(graph, edge_noise_level):
 
 
 def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
-    """Compute the forces per bond (edge) for a system state
+    """Compute the forces per bond (edge) for a system at time t
 
     Forces are a function of distance and parameterized by a potential (func). Periodic boundary conditions are
     assumed, thus the closest periodic image of each node is used calculate distance.
@@ -266,6 +266,21 @@ def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
 
 
 def compute_energies(receiver_nodes, sender_nodes, edge, rc, LX, func):
+    """Compute the energies for a system at time t
+
+    Energies are a function of distance and parameterized by a potential (func). Periodic boundary conditions are
+    assumed, thus the closest periodic image of each node is used calculate distance.
+
+    :param receiver_nodes: Tensor of indices of receiver nodes
+    :param sender_nodes: Tensor of indices of sender nodes
+    :param edge: Tensor of shape [num_edges x num_edge_features] that parameterize func (for Morse, num_edge_features=3)
+    :param rc: float; cutoff distance to ignore force contribution
+    :param LX: np.array([width, height]) of system
+    :param func: gradient of potential used to calculate the forces, signature should accept a Tensor which
+            parameterizes each bond
+    :return: potential_energy: float
+    :return: kinetic_energy: float
+    """
 
     diff = receiver_nodes[..., 0:2] - sender_nodes[..., 0:2]
     diffs = list()

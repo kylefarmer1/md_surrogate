@@ -5,9 +5,9 @@ training_set:
   min_num_atoms: 3
   max_num_atoms: 6
 test_set:
-  batch_size: 10
-  min_num_atoms: 3
-  max_num_atoms: 6
+  batch_size: 20
+  min_num_atoms: 2
+  max_num_atoms: 7
 unit_cell:
   xlo: -4
   ylo: -4
@@ -30,9 +30,9 @@ num_message_passing_steps: 1
 # training
 log_increment: 500
 num_training_iterations: 10000
-model_save_directory: models/
+# when loading or saving weights, the following paths are concatenated, thus place directory delimiters appropriately
+model_save_directory:
+  parent: models/
+  child: demo/
 
-models/md_1_1:
-  00e+04_50_0:
-    1_3/weights-1:
 

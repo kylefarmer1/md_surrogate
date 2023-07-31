@@ -5,6 +5,7 @@ from graph_nets import utils_tf
 import learned_simulator_graph
 import utils_md
 import time
+import os
 from args import Arguments
 tf.config.run_functions_eagerly(False)  # turn on for debugging, will run slower
 
@@ -260,7 +261,9 @@ def train(args):
     # endregion training
 
     # region save model weights
-    model_save_directory = 'models/'
+    model_save_directory = args.model_save_directory
+    if not os.path.exists(model_save_directory):
+        os.makedirs(model_save_directory)
     save_path = model_save_directory + \
         f'md_{seq_length}_{args.num_training_iterations:.2e}_' \
         f'{num_time_steps}_{step_size}_{connectivity_radius}/weights'

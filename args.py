@@ -25,7 +25,7 @@ The values of the arguments can be modified in 4 different ways:
 """
 import argparse
 import yaml
-DEFAULT_CONFIG = './config.yaml'
+DEFAULT_CONFIG = './config_2.yaml'
 STRING_OPTIONS = [
     'model_save_directory'
 ]
@@ -66,11 +66,12 @@ class Arguments:
         cli_args = vars(cli_args)
         cli_args_filtered = {k: v for k, v in cli_args.items() if v is not None}
         args.update(cli_args_filtered)
-        args = self.dict_to_namespace(args)
+        args = Arguments.dict_to_namespace(args)
 
         return args
 
-    def dict_to_namespace(self, d):
+    @staticmethod
+    def dict_to_namespace(d):
         """Recursively set Namespace from nested dicts
 
         :param d: Dictionary (nested is acceptable)
@@ -79,7 +80,7 @@ class Arguments:
         for k, v in d.items():
             if isinstance(v, dict):
                 d[k] = argparse.Namespace(**v)
-                d[k] = self.dict_to_namespace(v)
+                d[k] = Arguments.dict_to_namespace(v)
         return argparse.Namespace(**d)
 
     @staticmethod
