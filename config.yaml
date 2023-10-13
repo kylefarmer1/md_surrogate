@@ -1,7 +1,7 @@
 # system setup
 num_time_steps: 50
 training_set:
-  batch_size: 256
+  batch_size: 512
   min_num_atoms: 3
   max_num_atoms: 6
 test_set:
@@ -28,11 +28,11 @@ mlp_num_hidden_layers: 2
 num_message_passing_steps: 1
 
 # training
-log_increment: 500
-num_training_iterations: 10000
+log_increment: 1000
+num_training_iterations: 100000
 # when loading or saving weights, the following paths are concatenated, thus place directory delimiters appropriately
 model_save_directory:
   parent: models/
-  child: demo/weights
+  child: demo_big/weights
 
 

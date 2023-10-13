@@ -39,6 +39,23 @@ def create_fully_connected(num_nodes):
     return quants
 
 
+def create_fully_connected_bidirectional(num_nodes):
+    """Create a fully connected, bidirectional graph based on number of atoms
+
+    :param int; num_nodes: number of atoms in system
+    :return: list of lists of receiver atoms (indices) for each sender node
+    """
+    quants = list()
+    for i in range(num_nodes):
+        temp_quants = list()
+        for j in range(num_nodes):
+            if i != j:
+                temp_quants.append(j)
+        quants.append(temp_quants)
+
+    return quants
+
+
 def get_target_acceleration(position_sequence, velocity, step_size):
     return (position_sequence[-1, ...] - position_sequence[-2, ...] - velocity * step_size) * 2 / (step_size ** 2)
 
@@ -57,11 +74,11 @@ def preprocess_sequence(inputs, t, seq_length):
     mask_sequence[mask_sequence < 0] = 0
     velocity_sequence = tf.transpose(tf.gather(inputs[..., 2:4], mask_sequence), [1, 0, 2])
     velocity_sequence = tf.reshape(velocity_sequence, (velocity_sequence.shape[0], -1))
-    latest_position = inputs[-1, :, :2]
+    latest_position = inputs[t, :, :2]
     return tf.concat([latest_position, velocity_sequence, inputs[-1, :, 4:5]], axis=-1)
 
 
-def gen_data(batch_size, min_num_atoms, max_num_atoms, system_size):
+def gen_data(batch_size, min_num_atoms, max_num_atoms, system_size, parameterization, bidirectional=False):
     """Generate batch of graphs for MD simulations
 
     Create a batch of initial states as graphs. The number of atoms is sampled from min (inclusive) to max (
@@ -93,15 +110,14 @@ def gen_data(batch_size, min_num_atoms, max_num_atoms, system_size):
 
     bonds = list()
     for num in num_atoms:
-        links = create_fully_connected(num)
-        energies = [[morse_energy for _ in sublist]for sublist in links]
-        lengths = [[morse_length for _ in sublist]for sublist in links]
-        interaction_range = [[morse_range for _ in sublist] for sublist in links]
+        if bidirectional:
+            links = create_fully_connected_bidirectional(num)
+        else:
+            links = create_fully_connected(num)
+        atomtypes = np.random.randint(0, max_num_atoms-1, num)
         bond = {
             'links': links,
-            'energies': energies,
-            'lengths': lengths,
-            'interaction_ranges': interaction_range
+            'atomtypes': atomtypes
         }
         bonds.append(bond)
 
@@ -119,7 +135,7 @@ def gen_data(batch_size, min_num_atoms, max_num_atoms, system_size):
         for i in range(positions.shape[0]):
             for j in range(i+1, positions.shape[0]):
                 dist = np.linalg.norm(positions[j]-positions[i])
-                if dist < 0.8 * morse_length:
+                if dist < 0.5 * morse_length:
                     positions[j] = rand.uniform(low=system_size[0, :],
                                                 high=system_size[1, :],
                                                 size=(1, 2))
@@ -129,7 +145,7 @@ def gen_data(batch_size, min_num_atoms, max_num_atoms, system_size):
     positions = [anneal(position) for position in initial_positions]
 
     static_graphs = [
-        utils_md.base_graph(pos, vel, mass, bond)
+        utils_md.base_graph(pos, vel, mass, bond, parameterization)
         for pos, vel, mass, bond in zip(positions, velocities, masses, bonds)]
 
     return static_graphs, num_atoms
@@ -154,7 +170,7 @@ def train(args):
     model = learned_simulator_graph.LearnedSimulator(
         num_dimensions, step_size, system_size, connectivity_radius, model_kwargs)
     simulator = utils_md.MolecularDynamicsSimulatorGraph(
-        step_size=step_size, system_size=system_size, cutoff=connectivity_radius, integrator='verlet')
+        step_size=step_size, system_size=system_size, cutoff=connectivity_radius, integrator='verlet', potential='morse')
 
     # load_path = 'models/md_2_5.00e+05_50_0.1_7/weights-1'
     # utils_md.load_weights(model, load_path)

@@ -3,8 +3,8 @@ import tensorflow as tf
 import sonnet as snt
 from graph_nets import graphs, utils_tf
 
-
-def base_graph(positions, velocities, masses, bonds):
+# TODO: think about moving all potential related functions to another utils file, it's getting rather cluttered
+def base_graph(positions, velocities, masses, bonds, parameterization):
     """Define a basic MD system graph structure
 
     There are (num_atoms) atoms with mass (masses) bonded together, parameterized by a Morse potential which is
@@ -32,26 +32,27 @@ def base_graph(positions, velocities, masses, bonds):
     # nodes
     # set initial positions, velocities, mass
     n = positions.shape[0]
-    nodes = np.zeros((n, 5), dtype=np.float32)
+    nodes = np.zeros((n, 5), dtype=np.float64)
     nodes[:, :2] = positions
     nodes[:, 2:4] = velocities
     nodes[:, 4:5] = masses
 
-    # edges
-    # set morse bond, morse energy, morse interaction range
+    # edges, set interaction parameters from a lookup table
     edges, senders, receivers = [], [], []
-    for i, link in enumerate(bonds['links']):
-        for j in range(len(link)):
-            edges.append([bonds['energies'][i][j], bonds['lengths'][i][j],
-                          bonds['interaction_ranges'][i][j]])
+    for i, link in enumerate(bonds["links"]):
+        for ij, j in enumerate(link):
+            atomtype_i = bonds['atomtypes'][i]
+            atomtype_j = bonds['atomtypes'][j]
+            min, max = np.min([atomtype_i, atomtype_j]), np.max([atomtype_i, atomtype_j])
+            edges.append(parameterization[str(min)][str(max)].astype(np.float64))
             senders.append(i)
-            receivers.append(bonds['links'][i][j])
+            receivers.append(bonds["links"][i][ij])
 
     # globals
     # no globals for now
 
     return {
-        'globals': [],
+        'globals': np.array([0], dtype=np.float64),
         'nodes': nodes,
         'edges': edges,
         'receivers': receivers,
@@ -59,7 +60,7 @@ def base_graph(positions, velocities, masses, bonds):
     }
 
 
-def get_example_graph():
+def get_example_graph(parameterization):
     """Create a sample system
 
     :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
@@ -79,14 +80,149 @@ def get_example_graph():
     velocities = 0.3 * velocities + v_offset
     masses = np.array([[1.], [1.]])
     bonds = {
-        'links': [[1], []],
-        'energies': [[1.0], []],
-        'lengths': [[1.0], []],
-        'interaction_ranges': [[1.0], []]
+        'links': [[1], [0]],
+        'atomtypes': np.array([0, 0])
     }
-    static_graph = base_graph(positions, velocities, masses, bonds)
+    static_graph = base_graph(positions, velocities, masses, bonds, parameterization)
+    graph = utils_tf.data_dicts_to_graphs_tuple([static_graph])
+    return static_graph
+
+
+# TODO: docstring and revisit specification (consider removing)
+def get_example_graph_ternary(parameterization):
+    """Create a sample system
+
+    :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
+    """
+    positions = np.array([
+        [np.sqrt(2), 0.0],
+        [0.0, np.sqrt(6)],
+        [-np.sqrt(2), 0.0]
+    ])
+    velocities = np.array([
+        [np.sqrt(6)/2, -3*np.sqrt(2)/2],
+        [0.0, np.sqrt(6)],
+        [-np.sqrt(6)/2, -3*np.sqrt(2)/2]
+    ])
+    velocities = np.array([
+        [-1.0, -1.0],
+        [1.0, 0.0],
+        [-1.0, 1.0]
+    ])
+    v_offset = np.array([
+        [0.2, 0.0],
+        [0.2, 0.0],
+        [0.2, 0.0]
+    ])
+    theta = 0
+    v_rotation = np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]
+    ])
+    velocities = 0.3 * (velocities @ v_rotation.T) + v_offset
+    masses = np.array([[1.], [1.], [1.]])
+    bonds = {
+        'links': [[1, 2], [0, 2], [0, 1]],
+        'atomtypes': np.array([0, 0, 0])
+    }
+    static_graph = base_graph(positions, velocities, masses, bonds, parameterization)
     graph = utils_tf.data_dicts_to_graphs_tuple([static_graph])
     return graph
+
+
+# TODO: docstring
+def get_example_graph_quartet(parameterization):
+    """Create a sample system
+
+    :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
+    """
+    positions = np.array([
+        [1.0, 1.0],
+        [-1.0, 1.0],
+        [-1.0, -1.0],
+        [1.0, -1.0]
+    ])
+    velocities = np.array([
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+        [-1.0, -1.0]
+    ])
+    v_offset = np.array([
+        [0.2, 0.0],
+        [0.2, 0.0],
+        [0.2, 0.0],
+        [0.2, 0.0]
+    ])
+    theta = -np.pi/2
+    v_rotation = np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta), np.cos(theta)]
+    ])
+    velocities = 0.5 * velocities + v_offset
+    masses = np.array([[1.], [1.], [1.], [1.]])
+    bonds = {
+        'links': [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]],
+        'atomtypes': np.array([0, 0, 0, 0])
+    }
+    static_graph = base_graph(positions, velocities, masses, bonds, parameterization)
+    graph = utils_tf.data_dicts_to_graphs_tuple([static_graph])
+    return static_graph
+
+
+# TODO: finish the docstring
+def pairwise_morselike(bond):
+    """
+    Function to return both the attractive and repulsive components of the potential function.
+    Each component (fa, fr) are expressed in the following:
+                f = C_{a,r} * exp[alpha_{a,r} * (r-rc)]
+    Thus there are 5 parameters to describe each interaction (excluding the bond order term):
+                C_a, C_r, alpha_a, alpha_r, rc
+    :param bond:
+    :return:
+    """
+    alpha_r = bond[..., 0:1]
+    alpha_a = bond[..., 1:2]
+    C_r = bond[..., 2:3]
+    C_a = bond[..., 3:4]
+    rc = bond[..., 4:5]  # dimer bond distance
+    r = bond[..., -1:]  # dimer pairwise distance
+
+    fr = C_r * tf.math.exp(-2 * alpha_r * (r - rc))
+    fa = -1 * C_a * 2 * tf.math.exp(-1 * alpha_a * (r - rc))
+
+    return fr, fa
+
+
+# TODO: docstring
+def bond_order_parameter(r1bonds, r2bonds, rc):
+    c = r2bonds[..., 5:6]  # strength of angular effect
+    d = r2bonds[..., 6:7]  # sharpness of angular dependence
+    gamma = r2bonds[..., 7:8]  # fitting parameter
+    mu = r2bonds[..., 8:9]  # 1/angstroms, could be 0
+    h = r2bonds[..., 9:10]  # equilibrium ternary angle
+
+    r1 = r1bonds[..., -1:]  # pairwise distance b/w i & j
+    r2 = r2bonds[..., -1:]  # pairwise distance b/w i & k
+    theta = r2bonds[..., -2:-1]  # ternary angle
+
+    g = gamma * (1 + c**2/d**2 - c**2/(d**2 + (h + tf.math.cos(theta))**2))
+    chi_i = g * tf.math.exp(2 * mu * (r1 - r2))
+    # implement ternary cutoff here
+    #mask = tf.cast(r2 < rc, dtype=tf.float64)
+    mask = cutoff_func(r2, rc)
+    chi_i = chi_i * mask
+    chi = tf.reduce_sum(chi_i, axis=1, keepdims=True)
+    b = (1 + chi) ** (-1 / 2)
+    return b
+
+
+# TODO: docstring
+def tersoff_potential(r1bonds, r2bonds, rc):
+    fr, fa = pairwise_morselike(r1bonds)
+    ternary = bond_order_parameter(r1bonds, r2bonds, rc)
+    energy = fr + ternary * fa
+    return energy
 
 
 def morse_potential(bond):
@@ -98,8 +234,8 @@ def morse_potential(bond):
     :param bond: Tensor of shape E x 4 [u, r0, alpha, r]
     :return: energy per bond: Tensor of shape E x 1
     """
-    return bond[..., 0:1] * (np.exp(-2 * bond[..., 2:3] * (bond[..., 3:4] - bond[..., 1:2])) -
-                             2 * np.exp(-bond[..., 2:3] * (bond[..., 3:4] - bond[..., 1:2])))
+    return bond[..., 0:1] * (tf.math.exp(-2 * bond[..., 2:3] * (bond[..., 3:4] - bond[..., 1:2])) -
+                             2 * tf.math.exp(-bond[..., 2:3] * (bond[..., 3:4] - bond[..., 1:2])))
 
 
 def grad_morse_potential(bond):
@@ -179,15 +315,16 @@ def remap_pbc(xlo, xhi, pos):
     :return: Tensor of shape N x 2 with updated pos
     """
     lx = xhi - xlo
-    mask_hi = tf.cast(pos > xhi, dtype=tf.float32)
-    mask_lo = tf.cast(pos < xlo, dtype=tf.float32)
+    mask_hi = tf.cast(pos > xhi, dtype=tf.float64)
+    mask_lo = tf.cast(pos < xlo, dtype=tf.float64)
 
     new_pos = pos + lx * mask_lo
     new_pos = new_pos - lx * mask_hi
     return new_pos
 
 
-def aggregate(force_per_edge, senders, receivers, num_nodes):
+# TODO: Newton's third law is applied here... is it needed for ternary interactions
+def aggregate(force_per_edge, senders, num_nodes):
     """Sum all the forces acting on each node
 
     :param force_per_edge: Tensor of shape E x 2 [f_x, f_y]
@@ -200,11 +337,13 @@ def aggregate(force_per_edge, senders, receivers, num_nodes):
     spring_force_per_node = _aggregator(force_per_edge, senders, num_nodes)
 
     # newtons third law
-    spring_force_per_node -= _aggregator(force_per_edge, receivers, num_nodes)
+    #spring_force_per_node -= _aggregator(force_per_edge, receivers, num_nodes)
 
     return spring_force_per_node
 
 
+# TODO: revisit. Current noise was before atom types were considered.
+# TODO: What is the purpose of adding noise? Improve training... why?
 def apply_noise(graph, edge_noise_level):
     """Applies uniformly-distributed noise to the edges (bonds) of an MD system
 
@@ -222,10 +361,13 @@ def apply_noise(graph, edge_noise_level):
     noises = list()
     for edge in graph.n_edge:
         edge_noise = tf.random.uniform(
-            [1, graph.edges.shape[1]],
+            [edge, graph.edges.shape[1]],
             minval=-edge_noise_level,
-            maxval=edge_noise_level)
-        edge_noise = tf.repeat(edge_noise, repeats=edge, axis=0)
+            maxval=edge_noise_level,
+            dtype=tf.float64
+        )
+
+        #edge_noise = tf.repeat(edge_noise, repeats=edge, axis=0)
         noises.append(edge_noise)
 
     return graph.replace(edges=graph.edges + tf.concat(noises, axis=0))
@@ -260,49 +402,249 @@ def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
     bond = tf.concat([edge, x], axis=-1)
     force_magnitude = func(bond)
     force = force_magnitude * xhat
-    mask = tf.cast(x < rc, dtype=tf.float32)
+    mask = tf.cast(x < rc, dtype=tf.float64)
     force = force * mask
     return force
 
 
-def compute_energies(receiver_nodes, sender_nodes, edge, rc, LX, func):
-    """Compute the energies for a system at time t
+def cutoff_func(r, parameterization):
+    R = parameterization
+    D = R * 0.1
+    f = 1/2 - 1/2*np.sin(np.pi/2*((r-R)/D))
+    U  = tf.cast(r >= R-D, tf.bool)
+    L = tf.cast(r < R+D, tf.bool)
+    B = tf.logical_and(U, L)
+    f = f * tf.cast(B, tf.float64) + tf.cast(r < R-D, tf.float64)
+    return f
 
-    Energies are a function of distance and parameterized by a potential (func). Periodic boundary conditions are
-    assumed, thus the closest periodic image of each node is used calculate distance.
 
-    :param receiver_nodes: Tensor of indices of receiver nodes
-    :param sender_nodes: Tensor of indices of sender nodes
-    :param edge: Tensor of shape [num_edges x num_edge_features] that parameterize func (for Morse, num_edge_features=3)
-    :param rc: float; cutoff distance to ignore force contribution
-    :param LX: np.array([width, height]) of system
-    :param func: gradient of potential used to calculate the forces, signature should accept a Tensor which
-            parameterizes each bond
-    :return: potential_energy: float
-    :return: kinetic_energy: float
-    """
-
-    diff = receiver_nodes[..., 0:2] - sender_nodes[..., 0:2]
+def compute_energy_ternary(r1, r2, sender_positions, r1edge, r2edge, rc, lx, func, ke=False):
+    diff = sender_positions - r1
     diffs = list()
     for i in range(2):
-        p_x = diff[..., i] - LX * tf.math.rint(diff[..., i] / LX)
+        p_x = diff[..., i] - lx * tf.math.rint(diff[..., i] / lx)
+        diffs.append(p_x)
+    diff1 = tf.stack(diffs, axis=-1)
+    x1 = tf.norm(diff1, axis=-1, keepdims=True)
+
+    diff = sender_positions - r2
+    diffs = list()
+    for i in range(2):
+        p_x = diff[..., i] - lx * tf.math.rint(diff[..., i] / lx)
+        diffs.append(p_x)
+    diff2 = tf.stack(diffs, axis=-1)
+    #x2 = tf.norm(diff2, axis=-1, keepdims=True)
+    x2 = tf.expand_dims(tf.math.pow(tf.math.add(tf.math.pow(diff[..., 0], 2), tf.math.pow(diff[..., 1], 2)), 0.5), 2)
+
+    angles = compute_angle(diff1, diff2)
+
+    r1bond = tf.concat([r1edge, tf.cast(x1, dtype=tf.float64)], axis=-1)
+    r2bond = tf.concat([r2edge, tf.cast(angles, dtype=tf.float64), tf.cast(x2, dtype=tf.float64)], axis=-1)
+    energy = func(r1bond, r2bond, rc)
+    mask = cutoff_func(x1, rc)
+    #mask = tf.cast(x1 < rc, dtype=tf.float64)
+    energy = energy * mask
+    potential_energy = tf.math.reduce_sum(energy)
+    if not ke:
+        return energy
+    else:
+        all_nodes = tf.concat([r1, sender_positions], axis=0)
+        unique_nodes = tf.raw_ops.UniqueV2(x=all_nodes, axis=[0])[0]
+        kinetic_energy = 0.5 * tf.math.reduce_sum(unique_nodes[..., -1:] * unique_nodes[..., 2:4] ** 2)
+        return potential_energy/2, kinetic_energy
+
+
+def compute_energy_pairwise(receiver_positions, sender_positions, edge, rc, lx, func, ke=False):
+    diff = sender_positions - receiver_positions
+    diffs = list()
+    for i in range(2):
+        p_x = diff[..., i] - lx * tf.math.rint(diff[..., i] / lx)
         diffs.append(p_x)
     diff = tf.stack(diffs, axis=-1)
     x = tf.norm(diff, axis=-1, keepdims=True)
 
     bond = tf.concat([edge, x], axis=-1)
     energy = func(bond)
-    mask = tf.cast(x < rc, dtype=tf.float32)
+    mask = cutoff_func(x, rc)
+
+    # mask = tf.cast(x < rc, dtype=tf.float64)  # hard cutoff
     energy = energy * mask
     potential_energy = tf.math.reduce_sum(energy)
 
-    all_nodes = tf.concat([receiver_nodes, sender_nodes], axis=0)
-    unique_nodes = tf.raw_ops.UniqueV2(x=all_nodes, axis=[0])[0]
-    kinetic_energy = 0.5 * tf.math.reduce_sum(unique_nodes[..., -1:] * unique_nodes[..., 2:4]**2)
+    if not ke:
+        return energy
+    else:
+        all_nodes = tf.concat([receiver_positions, sender_positions], axis=0)
+        unique_nodes = tf.raw_ops.UniqueV2(x=all_nodes, axis=[0])[0]
+        kinetic_energy = 0.5 * tf.math.reduce_sum(unique_nodes[..., -1:] * unique_nodes[..., 2:4] ** 2)
+        return potential_energy/2, kinetic_energy
 
-    return potential_energy, kinetic_energy
+
+def compute_energy_pairwise_ind(receiver_positions, sender_positions, edge, rc, lx, func, ke=False):
+    diff = sender_positions - receiver_positions
+    diffs = list()
+    for i in range(2):
+        p_x = diff[..., i] - lx * tf.math.rint(diff[..., i] / lx)
+        diffs.append(p_x)
+    diff = tf.stack(diffs, axis=-1)
+    x = tf.norm(diff, axis=-1, keepdims=True)
+
+    bond = tf.concat([edge, x], axis=-1)
+    energy = func(bond)
+    mask = cutoff_func(x, rc)
+    #mask = tf.cast(x < rc, dtype=tf.float64)
+    energy = energy * mask
+
+    return energy
 
 
+def preprocess_pairwise(graph, next_position):
+    """Process the data to compute forces
+
+    Function name is outdated. Force per bond is calculated and then applied to each node. Senders exert a
+    positive force on the receiver and receivers exert a negative force (Newton's third law) on the sender. For
+    Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first) For Euler
+    integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
+
+    :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
+    :param next_position: Tensor of positions with shape [num_atoms x 2]
+    :return: Tensor of accelerations with shape [num_atoms x2]
+    """
+    receiver_nodes = tf.gather(next_position, graph.receivers)
+    sender_nodes = tf.gather(next_position, graph.senders)
+    edges = graph.edges
+
+    return sender_nodes, receiver_nodes, edges
+
+
+def preprocess_ternary(graph, next_position):
+    """Process the data to compute forces
+
+    Function name is outdated. Force per bond is calculated and then applied to each node. Senders exert a
+    positive force on the receiver and receivers exert a negative force (Newton's third law) on the sender. For
+    Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first) For Euler
+    integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
+
+    :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
+    :param next_position: Tensor of positions with shape [num_atoms x 2]
+    :return: Tensor of accelerations with shape [num_atoms x2]
+    """
+    # get the r2 neighbors
+    #receiver_2 = tf.transpose(tf.concat([tf.gather(graph.receivers, tf.where(graph.senders == r))
+    #                                    for r in graph.receivers], axis=1))
+    receiver_2 = tf.ragged.stack([tf.squeeze(tf.transpose(tf.gather(graph.receivers, tf.where(graph.senders == r))))
+                                  for r in graph.receivers], axis=0)
+    s = tf.expand_dims(graph.senders, 1)
+    # remove sender as an r2 neighbor
+    diff = receiver_2 - s
+    mask = tf.cast(diff, dtype=tf.bool)
+    r2 = tf.ragged.boolean_mask(diff, mask) + s
+    #r2 = tf.reshape(r2, (diff.shape-tf.constant([0, 1]))) + s
+
+    # get edge indices for r2 neighbors
+    r2_edge_index = get_ternary_edge_matches(graph.senders, graph.receivers, r2)
+
+    # gather position data
+    sender_nodes = tf.gather(next_position, s)
+    receiver_nodes = tf.gather(next_position, tf.expand_dims(graph.receivers, axis=1))
+    receiver_2_nodes = tf.gather(next_position, r2)
+
+    # gather edge data
+    r2edges = tf.gather(graph.edges, r2_edge_index)
+    r1edges = tf.expand_dims(graph.edges, 1)
+
+    return sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges
+
+
+def compute_force_autograd(senders, receivers, cutoff, edges, lx, potential, receivers2=None, r2edges=None):
+    # calculate forces from previous step using automatic differentiation.
+    with tf.GradientTape() as tape:
+        variables2 = tf.Variable(tf.identity(senders))
+        if r2edges is None:
+            energies = compute_energy_pairwise(receivers, variables2, edges, cutoff, lx, potential)
+        else:
+            energies = compute_energy_ternary(receivers, receivers2, variables2, edges,
+                                          r2edges, cutoff, lx, potential)
+        total_energy = tf.math.reduce_sum(energies)
+
+    spring_force_per_edge = tape.gradient(total_energy, variables2) * -1
+
+
+    return spring_force_per_edge, energies
+
+
+def verlet_integrator(graph, cutoff, lx, step_size, acceleration, potential, ternary=False):
+    half_velocity = graph.nodes[:, -3:-1] + 0.5 * acceleration * step_size
+    next_position = graph.nodes[:, :2] + half_velocity * step_size
+
+    if ternary:
+        sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges = preprocess_ternary(graph, next_position)
+        spring_force_per_edge, energies = compute_force_autograd(
+            sender_nodes, receiver_nodes, cutoff, r1edges, lx, potential, receiver_2_nodes, r2edges
+        )
+        spring_force_per_edge = tf.squeeze(spring_force_per_edge)
+    else:
+        sender_nodes, receiver_nodes, edges = preprocess_pairwise(graph, next_position)
+        spring_force_per_edge, energies = compute_force_autograd(
+            sender_nodes, receiver_nodes, cutoff, edges, lx, potential
+        )
+    spring_force_per_node = aggregate(spring_force_per_edge, graph.senders, next_position.shape[0])
+    updated_velocities = half_velocity + 0.5 * step_size * spring_force_per_node
+
+    return next_position, updated_velocities, spring_force_per_node, spring_force_per_edge, energies
+
+
+def euler_integrator(graph, cutoff, lx, step_size, acceleration, potential, ternary=False):
+
+    if ternary:
+        sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges = preprocess_ternary(graph, graph.nodes[:, :2])
+        spring_force_per_edge = compute_force_autograd(
+            sender_nodes, receiver_nodes, cutoff, r1edges, lx, potential, receiver_2_nodes, r2edges
+        )
+        spring_force_per_edge = tf.squeeze(spring_force_per_edge)
+    else:
+        sender_nodes, receiver_nodes, edges = preprocess_pairwise(graph, graph.nodes[:, :2])
+        spring_force_per_edge = compute_force_autograd(
+            sender_nodes, receiver_nodes, cutoff, edges, lx, potential
+        )
+
+    spring_force_per_node = aggregate(spring_force_per_edge, graph.senders, graph.nodes.shape[0])
+    updated_positions = graph.nodes[:, :2] + graph.nodes[:, 2:4] * step_size + 0.5 * spring_force_per_node*step_size**2
+    updated_velocities = graph.nodes[:, 2:4] + spring_force_per_node * step_size
+
+    return updated_positions, updated_velocities, spring_force_per_node
+
+
+# TODO currently only works for a 4 atom system (2 ternary connections), generalize to n ternary connections
+def get_ternary_edge_matches(senders, r1, r2):
+    s = senders.numpy()
+    r1 = r1.numpy()
+    r2 = r2.numpy()
+
+    srn = np.hstack([s[:, None], r1[:, None]])
+    sr2_id = list()
+    for row in range(s.size):
+        sr2_id_row = np.zeros(shape=(r2[row].size), dtype=np.int32)
+        for t in range(r2[row].size):
+            sr2_t = np.hstack([s[row, None], r2[row][t:t + 1]])
+            match = np.where((srn == sr2_t).all(axis=1))[0][0]
+            sr2_id_row[t] = match
+        sr2_id.append(sr2_id_row)
+
+    sr2_id = tf.ragged.stack(sr2_id)
+
+    return sr2_id
+
+
+# TODO: docstring
+def compute_angle(d1, d2):
+    dot = tf.math.reduce_sum(tf.math.multiply(d1, d2), axis=2, keepdims=True)
+    mag1 = tf.norm(d1, axis=2, keepdims=True)
+    mag2 = tf.expand_dims(tf.math.pow(tf.math.add(tf.math.pow(d2[..., 0], 2), tf.math.pow(d2[..., 1], 2)), 0.5), 2)
+    return tf.math.acos(dot/(mag1*mag2))
+
+
+# TODO: update docstring
 class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
     """Implements a basic MD simulator
 
@@ -314,7 +656,7 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
         _XLO, _XHI, _LX: system bounds and lengths, determined by `system_size`
     """
 
-    def __init__(self, step_size, system_size, cutoff, integrator, acceleration_init=None, name="SpringMassSimulator"):
+    def __init__(self, step_size, system_size, cutoff, integrator, potential, acceleration_init=None, name="SpringMassSimulator"):
         """Inits MolecularDynamicsSimulatorGraph
 
         Args:
@@ -332,69 +674,43 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
         self._XHI = system_size[1, :]
         self._LX = system_size[1, :] - system_size[0, :]
         self._acceleration = acceleration_init
+        self._potential = potential
+        self._three_body = False
+        self._force_per_edge = None
+        self._energies = None
+        if self._potential.lower() == 'tersoff':
+            self._three_body = True
 
     def __call__(self, graph):
-        """Apply one step of molecular dynamics
+        if self._integrator_name == 'verlet':
+            integrator = verlet_integrator
+        elif self._integrator_name == 'euler':
+            integrator = euler_integrator
+        else:
+            integrator = None
 
-        # TODO make potential function modular (like the integrator)
-        Positions and velocities are updated according to the integrator scheme chosen (euler or verlet) and forces
-        are calculated by the chosen potential function
+        if self._three_body:
+            ternary = True
+            potential = tersoff_potential
+        else:
+            ternary = False
+            potential = morse_potential
 
-        :param graph: a GraphsTuple having, for some integers N, E, G, Z:
-                - nodes: N x Z Tensor of [x_x, x_y, v_x1, v_y1, v_x2, v_x2, mass] for each atom (node). The second to
-                    last and third to least columns should represent the velocity (x and y component) of the system at
-                    the previous timestep
-                - edges: E x Z Tensor of [Z_1, Z_2, ..., Z_Z] for Z features which parameterize the force potential
-        :return: A tensor with shape N x 4 of [x_x, x_y, v_x, v_y] that describes the state of the system after 1 time
-                step
-        """
+        pos, vel, acc, e, e_per_e = integrator(
+            graph, self._cutoff, self._LX[0], self._step_size, self._acceleration, potential, ternary=ternary
+        )
 
-        # TODO modify to accommodate euler integrator
-        half_velocity = graph.nodes[:, -3:-1] + 0.5 * self._acceleration * self._step_size
-        next_position = graph.nodes[:, :2] + half_velocity * self._step_size
+        # save acc for next call
+        self._acceleration = acc
+        self._force_per_edge = e
+        self._energies = e_per_e
 
-        integrator = velocity_verlet_integration_vel
+        # remap pbc
+        updated_positions = remap_pbc(self._XLO, self._XHI, pos)
 
-        spring_force_per_node = self._preprocess(graph, next_position)
-        self._acceleration = spring_force_per_node
+        return tf.concat([updated_positions, vel], axis=-1)
 
-        # integrate forces
-        updated_velocities = integrator(
-            half_velocity, spring_force_per_node, self._step_size)
-        updated_positions = remap_pbc(self._XLO, self._XHI, next_position)
-
-        # update graph
-        return tf.concat([updated_positions, updated_velocities], axis=-1)
-
-    # TODO reorganize the following two functions as the second one simply just returns the first one with same
-    #  signature
-    def _preprocess(self, graph, next_position):
-        """Process the data to compute forces
-
-        Function name is outdated. Force per bond is calculated and then applied to each node. Senders exert a
-        positive force on the receiver and receivers exert a negative force (Newton's third law) on the sender. For
-        Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first) For Euler
-        integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
-
-        :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
-        :param next_position: Tensor of positions with shape [num_atoms x 2]
-        :return: Tensor of accelerations with shape [num_atoms x2]
-        """
-        receiver_nodes = tf.gather(next_position, graph.receivers)
-        sender_nodes = tf.gather(next_position, graph.senders)
-
-        # calculate forces from previous step
-        spring_force_per_edge = compute_forces(receiver_nodes, sender_nodes,
-                                               graph.edges,
-                                               self._cutoff,
-                                               self._LX[0],
-                                               grad_morse_potential)
-
-        # aggregate forces per atom
-        spring_force_per_node = aggregate(spring_force_per_edge, graph.senders, graph.receivers, next_position.shape[0])
-        return spring_force_per_node
-
-    def get_step_accelerations(self, graph, next_position):
+    def get_step_accelerations(self, graph):
         """Get the accelerations for each atom at a specific position a_t = a_t(x_t)
 
         For Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first)
@@ -404,8 +720,34 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
         :param next_position: Tensor of positions with shape [num_atoms x 2]
         :return: Tensor of accelerations with shape [num_atoms x2]
         """
-        spring_force_per_node = self._preprocess(graph, next_position)
-        return spring_force_per_node
+        if self._integrator_name == 'verlet':
+            integrator = verlet_integrator
+        elif self._integrator_name == 'euler':
+            integrator = euler_integrator
+        else:
+            integrator = None
+
+        if self._three_body:
+            ternary = True
+            potential = tersoff_potential
+            sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges = preprocess_ternary(graph,
+                                                                                                  graph.nodes[:, :2])
+            spring_force_per_edge, energies = compute_force_autograd(
+                sender_nodes, receiver_nodes, self._cutoff, r1edges, self._LX[0], potential, receiver_2_nodes, r2edges
+            )
+            spring_force_per_edge = tf.squeeze(spring_force_per_edge)
+        else:
+            ternary = False
+            potential = morse_potential
+            sender_nodes, receiver_nodes, edges = preprocess_pairwise(graph, graph.nodes[:, :2])
+            force_per_edge, energies = compute_force_autograd(
+                sender_nodes, receiver_nodes, self._cutoff, edges, self._LX[0], potential
+            )
+        force_per_node = aggregate(force_per_edge, graph.senders,
+                                          graph.nodes.shape[0])
+        self._force_per_edge = force_per_edge
+        self._energies = energies
+        return force_per_node
 
 
 def rollout_dynamics(simulator, graph, steps, seq_length):
@@ -468,7 +810,6 @@ def rollout_dynamics(simulator, graph, steps, seq_length):
         # update graph with next state
         graph = graph.replace(nodes=tf.concat([
             predicted_pos_vel, graph.nodes[..., 4:5]], axis=-1))
-
         return t + 1, graph, nodes_per_step.write(t, graph.nodes), \
             accelerations_per_step.write(t, simulator._acceleration)
 
@@ -489,6 +830,91 @@ def rollout_dynamics(simulator, graph, steps, seq_length):
     return g, nodes_per_step.stack(), accelerations_per_step.stack()
 
 
+def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
+    """Apply some number of Molecular Dynamics steps to an interaction network
+
+
+
+    :param simulator: A MolecularDynamicsSimulatorGraph, or some module or callable with the same signature
+    :param graph: a GraphsTuple having, for some integers N, E, G, Z:
+                - nodes: N x 5 Tensor of [x_x, x_y, v_x, v_y, mass] for each atom (node)
+                - edges: E x Z Tensor of [Z_1, Z_2, ..., Z_Z] for Z features which parameterize the force potential
+    :param steps: int; length of trajectory
+    :param seq_length: int; number of previous states to include for the input, i.e.
+                nodes_t, nodes_t-1, ..., nodes_t-seq_length
+    :return: graph: the input graph but with noise applied
+    :return: n: a `steps+1`xNx5 Tensor of the node features at each step
+    :return: a: a `steps+1xNx2 Tensor of the accelerations of each node at each step
+    """
+
+    def body(t, graph, nodes_per_step, energy_per_edge, acc_per_edge):
+        """dynamics step to be used with tf.while_loop
+
+        Provided the system at step t-1, predict the state at step t following the dynamics provided by the simulator.
+        The inputs processing should follow closely to that in train_md._preprocess. That function cannot be used here
+        due to the use of the TensorArray object which has different indexing properties.
+
+        :param t: int; timestep
+        :param graph: see above
+        :param nodes_per_step: TensorArray defined below which will hold the predicted positions and velocities
+        :param accelerations_per_step: TensorArray defined below which will hold the predicted accelerations
+        :return: t+1: int; the next step
+        :return: graph: GraphsTuple; updated system
+        :return: nodes_per_step: TensorArray updated at time t
+        :return: accelerations_per_step: TensorArray updated at time t
+        """
+        # get sequence of positions and velocities
+        mask_sequence = np.arange(t - seq_length, t, dtype=np.int32)
+        mask_sequence[mask_sequence < 0] = 0  # if the sequence goes into negative times, just append the initial state
+        position_velocity_sequence = nodes_per_step.gather(mask_sequence)  # apply the mask to the nodes
+        position_velocity_sequence = tf.transpose(position_velocity_sequence, [1, 0, 2])  # axes need to match simulator
+        velocity_sequence = position_velocity_sequence[:, :, 2:-1]  # get velocity sequence which will be 'flattened'
+
+        # spread the history of velocities for each node as node features
+        # they are spread such that the latest velocities are along the right most columns
+        velocity_sequence = tf.reshape(velocity_sequence, (velocity_sequence.shape[0], -1))
+
+        # rewrite graph nodes for use in the simulator
+        new_nodes = tf.concat([
+            graph.nodes[:, :2], velocity_sequence, graph.nodes[:, 4:5]
+        ], axis=-1)
+        graph = graph.replace(nodes=new_nodes)
+
+        # predicted next position with simulator
+        predicted_pos_vel = simulator(graph)
+        if isinstance(predicted_pos_vel, list):
+            # TODO investigate below, check the model architecture
+            # i think this is necessary for when there are many processing steps, but not entirely sure
+            predicted_pos_vel = predicted_pos_vel[-1]
+
+        # update graph with next state
+        graph = graph.replace(nodes=tf.concat([
+            predicted_pos_vel, graph.nodes[..., 4:5]], axis=-1))
+
+        return t + 1, graph, nodes_per_step.write(t, graph.nodes), \
+            energy_per_edge.write(t, simulator._energies), acc_per_edge.write(t, simulator._force_per_edge)
+
+    energy_per_edge = tf.TensorArray(
+        dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 1)
+    )
+    acc_per_edge = tf.TensorArray(
+        dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 2)
+    )
+    nodes_per_step = tf.TensorArray(
+        dtype=graph.nodes.dtype, size=steps + 1, element_shape=graph.nodes.shape
+    )
+    energy_per_edge = energy_per_edge.write(0, simulator._energies)
+    nodes_per_step = nodes_per_step.write(0, graph.nodes)
+    acc_per_edge = acc_per_edge.write(0, simulator._force_per_edge)
+
+    _, g, nodes_per_step, energy_per_edge, acc_per_edge = tf.while_loop(
+        lambda t, *unused_args: t <= steps,
+        body,
+        loop_vars=[1, graph, nodes_per_step, energy_per_edge, acc_per_edge]
+    )
+    return g, nodes_per_step.stack(), energy_per_edge.stack(), acc_per_edge.stack()
+
+
 def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
     """Applies noise and then simulates a molecular dynamics simulation for a number of steps
 
@@ -507,7 +933,7 @@ def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
 
     # implement  noise
     graph = apply_noise(graph, edge_noise_level)
-    simulator._acceleration = simulator.get_step_accelerations(graph, graph.nodes[..., :2])
+    simulator._acceleration = simulator.get_step_accelerations(graph)
     _, n, a = rollout_dynamics(simulator, graph, steps, seq_length)
     return graph, n, a
 
