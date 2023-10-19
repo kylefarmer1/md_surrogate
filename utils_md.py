@@ -4,14 +4,23 @@ import sonnet as snt
 from graph_nets import graphs, utils_tf
 
 # TODO: think about moving all potential related functions to another utils file, it's getting rather cluttered
+# TODO: Homogenize function variables and descriptions
+# TODO: clean up old/commented code
+# When working with pairwise potential, the nodes and edges passed around are 2 dimensionsal (N x M) but
+# for ternary they are 3 dimensional (N x _ x M) and the second neighbors are ragged tensors becuase of the fact that
+# not every graph has the same number of second neighbors. Current implementation handles the two cases, but it is
+# not the cleanest looking code.
 def base_graph(positions, velocities, masses, bonds, parameterization):
     """Define a basic MD system graph structure
 
-    There are (num_atoms) atoms with mass (masses) bonded together, parameterized by a Morse potential which is
-    represented as an edge. The graph is directional and each atom should only have a single edge to each unique
-    atom. It is suggested to have the atom with the lower index be the sender and the other to be the receiver. For
-    example, in a 3 atom, fully connected system, atom 0 sends an edge to atom 1, 2; atom 1 sends an edge to atom 2.
+    There are (num_atoms) atoms with mass (masses) bonded together, parameterized (parameterization) by a potential
+    which is represented as an edge. The graph is directional.
+    It is suggested to have the atom with the lower index be the sender and the other to be the receiver.
+    For example, in a 3 atom, fully connected system, atom 0 sends an edge to atom 1, 2; atom 1 sends an edge to atom 2.
     The 'links' key in (bonds) will thus have the following value: [[1,2], [2], []].
+    The 'edges' key in the returned dictionary is constructed by a look-up table (parameterization dictionary).
+    For example if a bond was between atoms of type 1 and type 4. Then that row in the edges key of the returned
+    dictionary corresponds to the value of the ['1']['4'] index in parameterization.
 
     Args:
         positions: np.array(shape = [num_atoms x 2]) with x,y coordinates for each atom
@@ -20,10 +29,16 @@ def base_graph(positions, velocities, masses, bonds, parameterization):
         bonds: dictionary with form
         {
             'links': list of lists of indices each atom is bonded to, len = num_atoms
-            'energies': list of lists of energies for each bond, len = num_atoms
-            'lengths': list of lists of morse bond lengths for each bond, len = num_atoms
-            'interaction_range': list of lists of morse interactions range, len = num_atoms
+            'atomtypes': list like of integers (representing the atom ID) with size num_atoms for a system.
         }
+        parameterization: dictionary of dictionaries of form
+        {
+            'atomtype_i':
+                {
+                'atomtype_j': array([1 x num_potential_features]) # i.e. for Morse 1 x 3
+                }
+        }
+        for all atomtypes i where j >= i. In other words, duplicate are not necessary (if [ij] is set, skip [ji]).
 
     Returns:
         data_dict: dictionary with globals, nodes, edges, receivers, and senders to represent
@@ -63,7 +78,7 @@ def base_graph(positions, velocities, masses, bonds, parameterization):
 def get_example_graph(parameterization):
     """Create a sample system
 
-    :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
+    :return: a GraphsTuple of a single bounded system. 2 particles 'spinning'
     """
     positions = np.array([
         [1.0, 1.0],
@@ -88,11 +103,10 @@ def get_example_graph(parameterization):
     return static_graph
 
 
-# TODO: docstring and revisit specification (consider removing)
 def get_example_graph_ternary(parameterization):
-    """Create a sample system
+    """Create a sample system. *** This still needs to be tested ***
 
-    :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
+    :return: a GraphsTuple of a single bounded system. 3 particles 'spinning'
     """
     positions = np.array([
         [np.sqrt(2), 0.0],
@@ -130,11 +144,10 @@ def get_example_graph_ternary(parameterization):
     return graph
 
 
-# TODO: docstring
 def get_example_graph_quartet(parameterization):
     """Create a sample system
 
-    :return: a GraphsTuple of a bounded system. 2 particles 'spinning'
+    :return: a GraphsTuple of a single bounded system. 4 particles 'spinning'
     """
     positions = np.array([
         [1.0, 1.0],
@@ -170,16 +183,16 @@ def get_example_graph_quartet(parameterization):
     return static_graph
 
 
-# TODO: finish the docstring
 def pairwise_morselike(bond):
     """
-    Function to return both the attractive and repulsive components of the potential function.
+    Function to return both the attractive and repulsive components of a Tersoff-like potential function.
     Each component (fa, fr) are expressed in the following:
                 f = C_{a,r} * exp[alpha_{a,r} * (r-rc)]
     Thus there are 5 parameters to describe each interaction (excluding the bond order term):
                 C_a, C_r, alpha_a, alpha_r, rc
-    :param bond:
-    :return:
+    :param bond: arraylike [N x M] where N is number of bonds and M is number of features in the parameterization.
+                    The indices along the 1st axis should be ordered as [alpha_r, alpha_a, C_r, C_a, rc, r]
+    :return: fr, fa - tensor of arrays ([N x 1], [N x 1])
     """
     alpha_r = bond[..., 0:1]
     alpha_a = bond[..., 1:2]
@@ -194,8 +207,19 @@ def pairwise_morselike(bond):
     return fr, fa
 
 
-# TODO: docstring
 def bond_order_parameter(r1bonds, r2bonds, rc):
+    """
+    Function to return the bond order component of a Tersoff-like potential function.
+
+    The order of elements along the 1st axis should follow that detailed in the comments of the
+
+    :param r1bonds: arraylike [N x 1 x M] representing the parameterization of each atomic interaction in the graph between
+            the first neighbors (atom i and atom j)
+    :param r2bonds: RaggedTensor [N x None x M] representing the parameterization of each atomic interaction in the graph between
+            the second neighbors (atom i and atom k)
+    :param rc: float; cutoff distance
+    :return: b - arraylike [N x 1]
+    """
     c = r2bonds[..., 5:6]  # strength of angular effect
     d = r2bonds[..., 6:7]  # sharpness of angular dependence
     gamma = r2bonds[..., 7:8]  # fitting parameter
@@ -217,8 +241,17 @@ def bond_order_parameter(r1bonds, r2bonds, rc):
     return b
 
 
-# TODO: docstring
 def tersoff_potential(r1bonds, r2bonds, rc):
+    """
+    Return the energy of interacting atoms following a Tersoff-like potential
+
+    :param r1bonds: arraylike [N x 1 x M] representing the parameterization of each atomic interaction in the graph between
+            the first neighbors (atom i and atom j)
+    :param r2bonds: RaggedTensor [N x None x M] representing the parameterization of each atomic interaction in the graph between
+            the second neighbors (atom i and atom k)
+    :param rc: float; cutoff distance
+    :return: arraylike [N x 1] representing the pairwise energy of interaction
+    """
     fr, fa = pairwise_morselike(r1bonds)
     ternary = bond_order_parameter(r1bonds, r2bonds, rc)
     energy = fr + ternary * fa
@@ -252,6 +285,7 @@ def grad_morse_potential(bond):
          tf.math.exp(-1 * bond[..., 2:3] * (bond[..., 3:4] - bond[..., 1:2])))
 
 
+# TODO possibly remove
 def velocity_verlet_integration_pos(nodes, acceleration, step_size):
     """Velocity Verlet Integrator part 1
 
@@ -273,6 +307,7 @@ def velocity_verlet_integration_pos(nodes, acceleration, step_size):
     return new_pos, half_vel
 
 
+# TODO possibly remove
 def velocity_verlet_integration_vel(half_velocity, acceleration, step_size):
     """Velocity Verlet Integrator part 2
 
@@ -293,6 +328,7 @@ def velocity_verlet_integration_vel(half_velocity, acceleration, step_size):
     return new_vel
 
 
+# TODO possibly remove
 def euler_integration(nodes, acceleration, step_size):
     """Euler Integrator
 
@@ -323,13 +359,12 @@ def remap_pbc(xlo, xhi, pos):
     return new_pos
 
 
-# TODO: Newton's third law is applied here... is it needed for ternary interactions
+# TODO reformat - always used in the context of node aggregation, no special inputs in _aggregator function
 def aggregate(force_per_edge, senders, num_nodes):
     """Sum all the forces acting on each node
 
     :param force_per_edge: Tensor of shape E x 2 [f_x, f_y]
     :param senders: Tensor of shape E, e.g. graph.senders
-    :param receivers: Tensor of shape E, e.g. graph.receivers
     :param num_nodes: Tensor of shape N where N should be the sum of unique values in receivers
     :return: Tensor of shape N x 2 [f_x, f_y]
     """
@@ -342,14 +377,12 @@ def aggregate(force_per_edge, senders, num_nodes):
     return spring_force_per_node
 
 
-# TODO: revisit. Current noise was before atom types were considered.
-# TODO: What is the purpose of adding noise? Improve training... why?
+# TODO revisit - purpose of adding noise? Improve training. Where/how is noise best applied? See comments in func
 def apply_noise(graph, edge_noise_level):
     """Applies uniformly-distributed noise to the edges (bonds) of an MD system
 
     Noise is only applied to the potential parameters (i.e. energy, length, interaction range for Morse potential) of
-    the edges. The noise is applied such that each bond in a unique system has the same noise, but different systems
-    have different noises.
+    the edges.
 
     :param graph: a GraphsTuple having for some integers N, E, G, Z:
             - nodes: Nx_ Tensor of [_, _, ..., _] for each node
@@ -358,6 +391,8 @@ def apply_noise(graph, edge_noise_level):
     :param edge_noise_level: Maximum amount to perturb edge spring constants
     :return: The input graph but with noise applied
     """
+
+    # implementation can probably be reduced to just calling tf.random.uniform once on the set of all edges in the graph
     noises = list()
     for edge in graph.n_edge:
         edge_noise = tf.random.uniform(
@@ -373,6 +408,7 @@ def apply_noise(graph, edge_noise_level):
     return graph.replace(edges=graph.edges + tf.concat(noises, axis=0))
 
 
+# TODO possibly remove - now using autograd for force calculation
 def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
     """Compute the forces per bond (edge) for a system at time t
 
@@ -407,18 +443,45 @@ def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
     return force
 
 
+# TODO possibly modify the name or description and function variable names
 def cutoff_func(r, parameterization):
+    """Cutoff function f_c
+
+    A smooth function from 0 to 1 representing the cutoff function in a potential. This particular implementation is
+    used in LAMMPS tersoff potential.
+
+    :param r: arraylike [N x 1]
+    :param parameterization: float - cutoff distance
+    :return: arraylike [N x 1]
+    """
     R = parameterization
     D = R * 0.1
     f = 1/2 - 1/2*np.sin(np.pi/2*((r-R)/D))
-    U  = tf.cast(r >= R-D, tf.bool)
+    U = tf.cast(r >= R-D, tf.bool)
     L = tf.cast(r < R+D, tf.bool)
     B = tf.logical_and(U, L)
     f = f * tf.cast(B, tf.float64) + tf.cast(r < R-D, tf.float64)
     return f
 
 
+# TODO Possibly reformat the following 5 functions. there are 2 sets of 'ternary'/'pairwise' functions
+# that can potentially be consolidated.
 def compute_energy_ternary(r1, r2, sender_positions, r1edge, r2edge, rc, lx, func, ke=False):
+    """Compute the pairwise energies with ternary interactions on a graph.
+
+    :param r1: arraylike [N x 1 x 2] where N is the number of first-neighbor edges (bonds) in a graph
+    :param r2: RaggedTensor [N x None x 2] where N is the number of second-neighbor edges (bonds) in a graph
+    :param sender_positions: arraylike [N x 2] where N is the number of edges (bonds) in a graph
+    :param r1edge: arraylike [N x 1 x M] where N is the number of first-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param r2edge: RaggedTensor [N x None x M] where N is the number of second-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param rc: float - cutoff distance
+    :param lx: float - system box length
+    :param func: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param ke: bool - calculate and return kinetic energies (True
+    :return: pe, ke float - total system energy for all systems in GraphsTruple
+    """
     diff = sender_positions - r1
     diffs = list()
     for i in range(2):
@@ -454,7 +517,20 @@ def compute_energy_ternary(r1, r2, sender_positions, r1edge, r2edge, rc, lx, fun
         return potential_energy/2, kinetic_energy
 
 
+# TODO homogenize function input names with ternary func (above)
 def compute_energy_pairwise(receiver_positions, sender_positions, edge, rc, lx, func, ke=False):
+    """Compute the pairwise energies with ternary interactions on a graph.
+
+    :param receiver_positions: arraylike [N x 2] where N is the number of first-neighbor edges (bonds) in a graph
+    :param sender_positions: arraylike [N x 2] where N is the number of edges (bonds) in a graph
+    :param edge: arraylike [N x M] where N is the number of first-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param rc: float - cutoff distance
+    :param lx: float - system box length
+    :param func: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param ke: bool - calculate and return kinetic energies (True
+    :return: pe, ke float - total system energy for all systems in GraphsTruple
+    """
     diff = sender_positions - receiver_positions
     diffs = list()
     for i in range(2):
@@ -480,7 +556,24 @@ def compute_energy_pairwise(receiver_positions, sender_positions, edge, rc, lx, 
         return potential_energy/2, kinetic_energy
 
 
+# TODO possibly remove, used for troubleshooting/plotting convenience
 def compute_energy_pairwise_ind(receiver_positions, sender_positions, edge, rc, lx, func, ke=False):
+    """Compute the pairwise energies with ternary interactions on a graph. *Returns pairwise energies for each edge
+    (bond) in the system, rather than the total system energy, as seen above.
+
+    :param r1: arraylike [N] where N is the number of first-neighbor edges (interactions) in a graph
+    :param r2: arraylike [N] where N is the number of second-neighbor edges (interactions) in a graph
+    :param sender_positions: arraylike [N] where N is the number of nodes (atoms) in a graph
+    :param r1edge: arraylike [N x M] where N is the number of first-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param r2edge: arraylike [N x M] where N is the number of second-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param rc: float - cutoff distance
+    :param lx: float - system box length
+    :param func: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param ke: bool - calculate and return kinetic energies (True
+    :return: pe, ke float - pairwise energies for each edge in the GraphsTuple
+    """
     diff = sender_positions - receiver_positions
     diffs = list()
     for i in range(2):
@@ -498,17 +591,16 @@ def compute_energy_pairwise_ind(receiver_positions, sender_positions, edge, rc, 
     return energy
 
 
+# TODO preprocess_pairwise does not really do much, it is just a little 3 line convenience, but how often is it called?
 def preprocess_pairwise(graph, next_position):
-    """Process the data to compute forces
+    """Process the data to compute energies
 
-    Function name is outdated. Force per bond is calculated and then applied to each node. Senders exert a
-    positive force on the receiver and receivers exert a negative force (Newton's third law) on the sender. For
-    Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first) For Euler
-    integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
+    Returns the positions of each node, organized by senders and receivers, and returns the edges (just calls
+    graph.edges)
 
     :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
     :param next_position: Tensor of positions with shape [num_atoms x 2]
-    :return: Tensor of accelerations with shape [num_atoms x2]
+    :return: Tensor of accelerations with shape [num_atoms x 2]
     """
     receiver_nodes = tf.gather(next_position, graph.receivers)
     sender_nodes = tf.gather(next_position, graph.senders)
@@ -517,17 +609,19 @@ def preprocess_pairwise(graph, next_position):
     return sender_nodes, receiver_nodes, edges
 
 
+# TODO investigate the second nearest neighbor gathering, is there a more direct way of doing it?
 def preprocess_ternary(graph, next_position):
-    """Process the data to compute forces
+    """Process the data to compute energies
 
-    Function name is outdated. Force per bond is calculated and then applied to each node. Senders exert a
-    positive force on the receiver and receivers exert a negative force (Newton's third law) on the sender. For
-    Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first) For Euler
-    integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
+    Returns the positions of each node, organized by senders and first and second receivers. Also returns the first
+    and second neighbor edges. Compared to the pairwise preprocess function, there is a fair bit of work in gathering
+    the second-nearest neighbors
 
     :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
     :param next_position: Tensor of positions with shape [num_atoms x 2]
-    :return: Tensor of accelerations with shape [num_atoms x2]
+    :return: sender_nodes, receiver_nodes, receiver_2_nodes arraylike [N x 2] where N is number of edges
+    :return: r1edges, r2edges arraylike [N x M] where N is number of edges and M is number of features in
+            parameterization
     """
     # get the r2 neighbors
     #receiver_2 = tf.transpose(tf.concat([tf.gather(graph.receivers, tf.where(graph.senders == r))
@@ -556,8 +650,24 @@ def preprocess_ternary(graph, next_position):
     return sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges
 
 
+# TODO again, possibly consolidate ternary/pairwise actions. rename variables2 to something more detailed
 def compute_force_autograd(senders, receivers, cutoff, edges, lx, potential, receivers2=None, r2edges=None):
-    # calculate forces from previous step using automatic differentiation.
+    """ Compute forces from pairwise interactions with automatic differentiation
+
+    :param senders: arraylike [N] where N is the number of edges (bonds) in a graph
+    :param receivers: arraylike [N (x 1)] where N is the number of edges (bonds) in a graph, will be 2D [N x 1] in the
+            case of ternary interactions
+    :param cutoff: float - cutoff distance
+    :param edges: arraylike [N x M] where N is the number of first-neighbor edges (interactions) in a graph and M is
+            the number of features
+    :param lx: float - system box length
+    :param potential: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param receivers2: RaggedTensor [N x None] where N is the number of second-neighbor edges (bonds) in a graph
+    :param r2edges: RaggedTensor [N x None x M] where N is the number of second-neighbor edges (interactions) in a graph
+            and M is the number of features
+    :return: spring_force_per_edge: arraylike [N x 2] where N is number of edges
+    :return: energies: arraylike [N x 1] where N is number of edges
+    """
     with tf.GradientTape() as tape:
         variables2 = tf.Variable(tf.identity(senders))
         if r2edges is None:
@@ -569,11 +679,27 @@ def compute_force_autograd(senders, receivers, cutoff, edges, lx, potential, rec
 
     spring_force_per_edge = tape.gradient(total_energy, variables2) * -1
 
-
     return spring_force_per_edge, energies
 
 
+# TODO possibly consolidate ternary/pairwise implementations in both euler and verlet integrator functions
+# TODO possibly consolidate the number returned parameters, are they all necessary?
 def verlet_integrator(graph, cutoff, lx, step_size, acceleration, potential, ternary=False):
+    """Velocity-Verlet integrator
+
+    :param graph: GraphsTuple object for a collection of system graphs
+    :param cutoff: float - cutoff distance
+    :param lx: float - system box length
+    :param step_size: float - step size (dt)
+    :param acceleration: arraylike [N x 2] where N is number of atoms
+    :param potential: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param ternary: bool
+    :return: next_position arraylike: [N x 2] of atoms next positions (at t + 1)
+    :return: updated_velocities: [N x 2] of atoms updated velocities (at t+1)
+    :return: spring_force_per_node: arraylike [N x 2] where N is number of nodes
+    :return: spring_force_per_edge: arraylike [N x 2] where N is number of edges
+    :return: energies: arraylike [N x 1] where N is number of edges
+    """
     half_velocity = graph.nodes[:, -3:-1] + 0.5 * acceleration * step_size
     next_position = graph.nodes[:, :2] + half_velocity * step_size
 
@@ -594,7 +720,22 @@ def verlet_integrator(graph, cutoff, lx, step_size, acceleration, potential, ter
     return next_position, updated_velocities, spring_force_per_node, spring_force_per_edge, energies
 
 
+# TODO update signature (acceleration not used, although may be necessary for consistency when choosing different
+#  integrators)
 def euler_integrator(graph, cutoff, lx, step_size, acceleration, potential, ternary=False):
+    """Euler Integrator
+
+    :param graph: GraphsTuple object for a collection of system graphs
+    :param cutoff: float - cutoff distance
+    :param lx: float - system box length
+    :param step_size: float - step size (dt)
+    :param acceleration: arraylike [N x 2] where N is number of atoms
+    :param potential: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+    :param ternary: bool
+    :return: updated_position arraylike: [N x 2] of atoms next positions (at t + 1)
+    :return: updated_velocities: [N x 2] of atoms updated velocities (at t+1)
+    :return: spring_force_per_node: arraylike [N x 2] where N is number of nodes
+    """
 
     if ternary:
         sender_nodes, receiver_nodes, receiver_2_nodes, r1edges, r2edges = preprocess_ternary(graph, graph.nodes[:, :2])
@@ -617,6 +758,15 @@ def euler_integrator(graph, cutoff, lx, step_size, acceleration, potential, tern
 
 # TODO currently only works for a 4 atom system (2 ternary connections), generalize to n ternary connections
 def get_ternary_edge_matches(senders, r1, r2):
+    """Get the indices of second neighbor edges
+
+    :param senders: arraylike [N] where N is the number of edges (e.g. graph.senders)
+    :param r1: arraylike [N] where N is the number of edges (e.g. graph.receivers)
+    :param r2: arraylike [N x None] where N is the number of edges & None varies depending on the number of r2
+        neighbors for each sender
+    :return: RaggedTensor [N x None] where N is the number of edges & None varies depending on the number of r2
+        neighbors for each sender
+    """
     s = senders.numpy()
     r1 = r1.numpy()
     r2 = r2.numpy()
@@ -636,8 +786,13 @@ def get_ternary_edge_matches(senders, r1, r2):
     return sr2_id
 
 
-# TODO: docstring
 def compute_angle(d1, d2):
+    """Compute the angle between two vectors
+
+    :param d1: tensor [N x 1 x 2]
+    :param d2: RaggedTensor [N x None x 2]
+    :return: RaggedTensor [N x None x 1]
+    """
     dot = tf.math.reduce_sum(tf.math.multiply(d1, d2), axis=2, keepdims=True)
     mag1 = tf.norm(d1, axis=2, keepdims=True)
     mag2 = tf.expand_dims(tf.math.pow(tf.math.add(tf.math.pow(d2[..., 0], 2), tf.math.pow(d2[..., 1], 2)), 0.5), 2)
@@ -646,26 +801,22 @@ def compute_angle(d1, d2):
 
 # TODO: update docstring
 class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
-    """Implements a basic MD simulator
+    """Implements a basic MD simulator"""
 
-    Attributes:
-        _step_size: step size for integrator
-        _cutoff: distance to start ignoring interactions
-        _integrator_name: name of integrator to update system state, either 'verlet' or 'euler'
-        _acceleration: current acceleration vector for each atom in the system
-        _XLO, _XHI, _LX: system bounds and lengths, determined by `system_size`
-    """
-
-    def __init__(self, step_size, system_size, cutoff, integrator, potential, acceleration_init=None, name="SpringMassSimulator"):
+    def __init__(self, step_size, system_size, cutoff, integrator, potential, acceleration_init=None,
+                 name="SpringMassSimulator"):
         """Inits MolecularDynamicsSimulatorGraph
 
-        Args:
-              step_size: float
-              system_size: np.array([[xlo, ylo], [xhi, yhi]]
-              cutoff: float
-              integrator: str - either 'verlet' or 'euler'
-              acceleration_init: np.array(shape=[num_atoms x 2])
+        :param step_size: float - step size (dt)
+        :param system_size: arraylike [2 x 2] of form [[xlo, ylo],[xhi, yhi]]
+        :param cutoff: float - cutoff distance
+        :param integrator: function with signature func(graph, cutoff, lx, step_size, acceleration, potential, ternary)
+                    -> (arraylike [N x 2], arraylike [N x 2], arraylike [N x 2]) where N is number of nodes (atoms)
+        :param potential: function with signature func(bonds) -> arraylike N X 1 where N is the number of edges
+        :param acceleration_init: arraylike [N x 2] where N is number of nodes (atoms)
+        :param name: string
         """
+
         super(MolecularDynamicsSimulatorGraph, self).__init__(name=name)
         self._step_size = step_size
         self._cutoff = cutoff
@@ -682,6 +833,11 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
             self._three_body = True
 
     def __call__(self, graph):
+        """
+
+        :param graph: GraphsTuple object for a collection of system graphs
+        :return: arraylike [N x 4] positions and velocities of each node (atom) at step t+1
+        """
         if self._integrator_name == 'verlet':
             integrator = verlet_integrator
         elif self._integrator_name == 'euler':
@@ -710,15 +866,13 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
 
         return tf.concat([updated_positions, vel], axis=-1)
 
+    # TODO clean-up function. Some unused variables and misleading variable names
     def get_step_accelerations(self, graph):
-        """Get the accelerations for each atom at a specific position a_t = a_t(x_t)
+        """Get the accelerations for each atom at a specific position a_t = a_t(x_t). This is necessary for the Verlet
+        integrator
 
-        For Verlet integration, a(t + dt) is a function of x(t + dt) (positions must be updated first)
-        For Euler integration a(t+dt) is a function of x(t) (positions are updated after computing forces)
-
-        :param graph: GraphsTuple of the current state of the system, only the edges are used for computation
-        :param next_position: Tensor of positions with shape [num_atoms x 2]
-        :return: Tensor of accelerations with shape [num_atoms x2]
+        :param graph: GraphsTuple object for a collection of system graphs
+        :return: arraylike [N x 2] accelerations per node (atom)
         """
         if self._integrator_name == 'verlet':
             integrator = verlet_integrator
@@ -750,29 +904,27 @@ class MolecularDynamicsSimulatorGraph(snt.Module):  # noqa
         return force_per_node
 
 
+# TODO `seq_length` has never been used, potentially remove
 def rollout_dynamics(simulator, graph, steps, seq_length):
-    """Apply some number of Molecular Dynamics steps to an interaction network
-
-
+    """Apply some number of Molecular Dynamics steps (`steps`) to an interaction network using tf's `while_loop`.
 
     :param simulator: A MolecularDynamicsSimulatorGraph, or some module or callable with the same signature
     :param graph: a GraphsTuple having, for some integers N, E, G, Z:
                 - nodes: N x 5 Tensor of [x_x, x_y, v_x, v_y, mass] for each atom (node)
                 - edges: E x Z Tensor of [Z_1, Z_2, ..., Z_Z] for Z features which parameterize the force potential
-    :param steps: int; length of trajectory
-    :param seq_length: int; number of previous states to include for the input, i.e.
+    :param steps: int - length of trajectory
+    :param seq_length: int - number of previous states to include for the input, i.e.
                 nodes_t, nodes_t-1, ..., nodes_t-seq_length
-    :return: graph: the input graph but with noise applied
-    :return: n: a `steps+1`xNx5 Tensor of the node features at each step
-    :return: a: a `steps+1xNx2 Tensor of the accelerations of each node at each step
+    :return: g: GraphsTuple of the input graph but with noise applied
+    :return: nodes_per_step: arraylike [steps+1 x N x 5]  of the node features at each step
+    :return: accelerations_per_step: arraylike [steps+1 x N x 2]  of the accelerations of each node at each step
     """
 
+    # TODO possibly consolidate the preprocessing done here into another function (or an already existing one)
     def body(t, graph, nodes_per_step, accelerations_per_step):
         """dynamics step to be used with tf.while_loop
 
-        Provided the system at step t-1, predict the state at step t following the dynamics provided by the simulator.
-        The inputs processing should follow closely to that in train_md._preprocess. That function cannot be used here
-        due to the use of the TensorArray object which has different indexing properties.
+        Provided the system at step t, predict the state at step t+1 following the dynamics provided by the simulator.
 
         :param t: int; timestep
         :param graph: see above
@@ -830,6 +982,7 @@ def rollout_dynamics(simulator, graph, steps, seq_length):
     return g, nodes_per_step.stack(), accelerations_per_step.stack()
 
 
+# TODO I think this was used for troubleshooting, can probably be archived/removed
 def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
     """Apply some number of Molecular Dynamics steps to an interaction network
 
@@ -842,9 +995,10 @@ def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
     :param steps: int; length of trajectory
     :param seq_length: int; number of previous states to include for the input, i.e.
                 nodes_t, nodes_t-1, ..., nodes_t-seq_length
-    :return: graph: the input graph but with noise applied
-    :return: n: a `steps+1`xNx5 Tensor of the node features at each step
-    :return: a: a `steps+1xNx2 Tensor of the accelerations of each node at each step
+    :return: g: GraphsTuple of the input graph but with noise applied
+    :return: energy_per_edge: arraylike [steps+1 x E x 1]  of the interaction energies for each step
+    :return: accelerations_per_step: arraylike [steps+1 x E x 2]  of the acceleration contribution of each interaction
+                at each step
     """
 
     def body(t, graph, nodes_per_step, energy_per_edge, acc_per_edge):
@@ -915,8 +1069,10 @@ def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
     return g, nodes_per_step.stack(), energy_per_edge.stack(), acc_per_edge.stack()
 
 
+# TODO homogenize varibale names with those found above in `rollout_dynamics`
 def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
-    """Applies noise and then simulates a molecular dynamics simulation for a number of steps
+    """Applies noise and then simulates a molecular dynamics simulation for a number of steps for invoking
+    `rollout_dynamics`
 
     :param simulator: A MolecularDynamicsSimulatorGraph, or some module or callable with the same signature
     :param graph: a GraphsTuple having, for some integers N, E, G, Z:
@@ -926,9 +1082,9 @@ def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
     :param edge_noise_level: float; maximum amount to perturb the bond parameters
     :param seq_length: int; number of previous steps to include for the input, i.e.
                 nodes_t, nodes_t-1, ..., nodes_t-seq_length
-    :return: graph: the input graph but with noise applied
-    :return: n: a `steps+1`xNx5 Tensor of the node features at each step
-    :return: a: a `steps+1xNx2 Tensor of the accelerations of each node at each step
+    :return: g: GraphsTuple of the input graph but with noise applied
+    :return: n: arraylike [steps+1 x N x 5]  of the node features at each step
+    :return: a: arraylike [steps+1 x N x 2]  of the accelerations of each node at each step
     """
 
     # implement  noise
@@ -939,11 +1095,19 @@ def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
 
 
 def load_weights(model, weights_path):
-    """Load model weights with tf checkpoints"""
+    """Load model weights with tf checkpoints
+
+    Usage:
+        model = learned_simulator(...) # define model architecture
+        utils_md.load_weights(model, 'path/to/model/weights' # load weights
+        # model is ready for use
+    """
     checkpoint = tf.train.Checkpoint(module=model)
     checkpoint.restore(weights_path)
 
 
+# TODO I don't think this is used anymore, it would be used in the `learned_simulators` classes, should confirm and
+#  remove
 @tf.function(reduce_retracing=True)
 def compute_n_edge(senders, n_node):
     """ Compute the number of edges per graph in the batch
@@ -975,12 +1139,26 @@ def compute_n_edge(senders, n_node):
 
 
 def save_graph(graph, path):
-    """Save a GraphsTuple with numpy"""
+    """Save a GraphsTuple with numpy
+
+    Usage (e.g. saving training data):
+        static_graph, num_atoms = gen_data(...) # load example data
+        graph = utils_tf.data_dict_to_graphs_tuple(static_graph # convert to GraphsTuple
+        utils_md.save_graph(graph, 'path/to/write/graph.npy') # save GraphsTuple
+        utils_md.load_graph('path/to/write/graph.npy') # load GraphsTuple
+    """
     np.save(path, np.array(graph, dtype=object), allow_pickle=True)
 
 
 def load_graph(path):
-    """Load a GraphsTuple from numpy object"""
+    """Load a GraphsTuple from numpy object
+
+    Usage (e.g. saving training data):
+        static_graph, num_atoms = gen_data(...) # load example data
+        graph = utils_tf.data_dict_to_graphs_tuple(static_graph # convert to GraphsTuple
+        utils_md.save_graph(graph, 'path/to/write/graph.npy') # save GraphsTuple
+        utils_md.load_graph('path/to/write/graph.npy') # load GraphsTuple
+    """
     keys = ['nodes', 'edges', 'receivers', 'senders', 'globals', 'n_node', 'n_edge']
     loaded_graph_object = np.load(path, allow_pickle=True)
     return graphs.GraphsTuple(**dict(zip(keys, loaded_graph_object)))
