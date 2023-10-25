@@ -6,8 +6,8 @@ from graph_nets import graphs, utils_tf
 # TODO: think about moving all potential related functions to another utils file, it's getting rather cluttered
 # TODO: Homogenize function variables and descriptions
 # TODO: clean up old/commented code
-# When working with pairwise potential, the nodes and edges passed around are 2 dimensionsal (N x M) but
-# for ternary they are 3 dimensional (N x _ x M) and the second neighbors are ragged tensors becuase of the fact that
+# When working with pairwise potential, the nodes and edges passed around are 2 dimensional (N x M) but
+# for ternary they are 3 dimensional (N x _ x M) and the second neighbors are ragged tensors because of the fact that
 # not every graph has the same number of second neighbors. Current implementation handles the two cases, but it is
 # not the cleanest looking code.
 def base_graph(positions, velocities, masses, bonds, parameterization):
@@ -113,11 +113,12 @@ def get_example_graph_ternary(parameterization):
         [0.0, np.sqrt(6)],
         [-np.sqrt(2), 0.0]
     ])
-    velocities = np.array([
-        [np.sqrt(6)/2, -3*np.sqrt(2)/2],
-        [0.0, np.sqrt(6)],
-        [-np.sqrt(6)/2, -3*np.sqrt(2)/2]
-    ])
+    # ! Redundant
+    # velocities = np.array([
+    #     [np.sqrt(6)/2, -3*np.sqrt(2)/2],
+    #     [0.0, np.sqrt(6)],
+    #     [-np.sqrt(6)/2, -3*np.sqrt(2)/2]
+    # ])
     velocities = np.array([
         [-1.0, -1.0],
         [1.0, 0.0],
@@ -172,6 +173,7 @@ def get_example_graph_quartet(parameterization):
         [np.cos(theta), -np.sin(theta)],
         [np.sin(theta), np.cos(theta)]
     ])
+    # ! Why this one do not have rotation
     velocities = 0.5 * velocities + v_offset
     masses = np.array([[1.], [1.], [1.], [1.]])
     bonds = {
@@ -190,7 +192,7 @@ def pairwise_morselike(bond):
                 f = C_{a,r} * exp[alpha_{a,r} * (r-rc)]
     Thus there are 5 parameters to describe each interaction (excluding the bond order term):
                 C_a, C_r, alpha_a, alpha_r, rc
-    :param bond: arraylike [N x M] where N is number of bonds and M is number of features in the parameterization.
+    :param bond: array like [N x M] where N is number of bonds and M is number of features in the parameterization.
                     The indices along the 1st axis should be ordered as [alpha_r, alpha_a, C_r, C_a, rc, r]
     :return: fr, fa - tensor of arrays ([N x 1], [N x 1])
     """
@@ -213,12 +215,12 @@ def bond_order_parameter(r1bonds, r2bonds, rc):
 
     The order of elements along the 1st axis should follow that detailed in the comments of the
 
-    :param r1bonds: arraylike [N x 1 x M] representing the parameterization of each atomic interaction in the graph between
+    :param r1bonds: array like [N x 1 x M] representing the parameterization of each atomic interaction in the graph between
             the first neighbors (atom i and atom j)
     :param r2bonds: RaggedTensor [N x None x M] representing the parameterization of each atomic interaction in the graph between
             the second neighbors (atom i and atom k)
     :param rc: float; cutoff distance
-    :return: b - arraylike [N x 1]
+    :return: b - array like [N x 1]
     """
     c = r2bonds[..., 5:6]  # strength of angular effect
     d = r2bonds[..., 6:7]  # sharpness of angular dependence
@@ -286,60 +288,63 @@ def grad_morse_potential(bond):
 
 
 # TODO possibly remove
-def velocity_verlet_integration_pos(nodes, acceleration, step_size):
-    """Velocity Verlet Integrator part 1
+# ! Not called
+# def velocity_verlet_integration_pos(nodes, acceleration, step_size):
+#     """Velocity Verlet Integrator part 1
 
-    Update the positions and half velocities (steps 1 & 2) with the Velocity Verlet integrator:
+#     Update the positions and half velocities (steps 1 & 2) with the Velocity Verlet integrator:
 
-    Standard implementation of the Velocity-Verlet integrator:
-    1. Calculate half velocity: v(t+1/2dt) = v(t) + 1/2a(t)dt
-    2. Update position x(t+dt) = x(t) + v(t+1/2dt)dt
-    3. Calculate accelerations(forces) (a(t+dt)) with x(t+dt)
-    4. Update velocity v(t+dt) = v(t+1/2dt) + 1/2a(t+dt)dt
+#     Standard implementation of the Velocity-Verlet integrator:
+#     1. Calculate half velocity: v(t+1/2dt) = v(t) + 1/2a(t)dt
+#     2. Update position x(t+dt) = x(t) + v(t+1/2dt)dt
+#     3. Calculate accelerations(forces) (a(t+dt)) with x(t+dt)
+#     4. Update velocity v(t+dt) = v(t+1/2dt) + 1/2a(t+dt)dt
 
-    :param nodes: Tensor of shape N x 4 [pos_x, pos_y, vel_x, vel_y]
-    :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
-    :param step_size: float
-    :return: list of 2 Tensors [Tensor(pos_x, pos_y), Tensor(vel_x, vel_y)]
-    """
-    half_vel = nodes[..., 2:4] + 0.5 * acceleration * step_size
-    new_pos = nodes[..., :2] + half_vel * step_size
-    return new_pos, half_vel
-
-
-# TODO possibly remove
-def velocity_verlet_integration_vel(half_velocity, acceleration, step_size):
-    """Velocity Verlet Integrator part 2
-
-    Update the velocities (step 4) with the Velocity Verlet integrator:
-
-    Standard implementation of the Velocity-Verlet integrator:
-    1. Calculate half velocity: v(t+1/2dt) = v(t) + 1/2a(t)dt
-    2. Update position x(t+dt) = x(t) + v(t+1/2dt)dt
-    3. Calculate accelerations(forces) (a(t+dt)) with x(t+dt)
-    4. Update velocity v(t+dt) = v(t+1/2dt) + 1/2a(t+dt)dt
-
-    :param half_velocity: Tensor of shape N x 2 [vel_x, vel_y]
-    :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
-    :param step_size: float
-    :return: Tensor of shape N x 2 [vel_x, vel_y]
-    """
-    new_vel = half_velocity + 0.5 * step_size * acceleration
-    return new_vel
+#     :param nodes: Tensor of shape N x 4 [pos_x, pos_y, vel_x, vel_y]
+#     :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
+#     :param step_size: float
+#     :return: list of 2 Tensors [Tensor(pos_x, pos_y), Tensor(vel_x, vel_y)]
+#     """
+#     half_vel = nodes[..., 2:4] + 0.5 * acceleration * step_size
+#     new_pos = nodes[..., :2] + half_vel * step_size
+#     return new_pos, half_vel
 
 
 # TODO possibly remove
-def euler_integration(nodes, acceleration, step_size):
-    """Euler Integrator
+# ! Not called
+# def velocity_verlet_integration_vel(half_velocity, acceleration, step_size):
+#     """Velocity Verlet Integrator part 2
 
-    :param nodes: Tensor of shape N x 4 [pos_x, pos_y, vel_x, vel_y]
-    :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
-    :param step_size: float
-    :return: updated positions and velocities: list of 2 Tensors [Tensor(pos_x, pos_y), Tensor(vel_x, vel_y)]
-    """
-    new_pos = nodes[..., :2] + nodes[..., 2:4] * step_size + 0.5 * acceleration * step_size ** 2
-    new_vel = nodes[..., 2:4] + acceleration * step_size
-    return new_pos, new_vel
+#     Update the velocities (step 4) with the Velocity Verlet integrator:
+
+#     Standard implementation of the Velocity-Verlet integrator:
+#     1. Calculate half velocity: v(t+1/2dt) = v(t) + 1/2a(t)dt
+#     2. Update position x(t+dt) = x(t) + v(t+1/2dt)dt
+#     3. Calculate accelerations(forces) (a(t+dt)) with x(t+dt)
+#     4. Update velocity v(t+dt) = v(t+1/2dt) + 1/2a(t+dt)dt
+
+#     :param half_velocity: Tensor of shape N x 2 [vel_x, vel_y]
+#     :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
+#     :param step_size: float
+#     :return: Tensor of shape N x 2 [vel_x, vel_y]
+#     """
+#     new_vel = half_velocity + 0.5 * step_size * acceleration
+#     return new_vel
+
+
+# TODO possibly remove
+# ! Not called
+# def euler_integration(nodes, acceleration, step_size):
+#     """Euler Integrator
+
+#     :param nodes: Tensor of shape N x 4 [pos_x, pos_y, vel_x, vel_y]
+#     :param acceleration: Tensor of shape N x 2 [acc_x, acc_y]
+#     :param step_size: float
+#     :return: updated positions and velocities: list of 2 Tensors [Tensor(pos_x, pos_y), Tensor(vel_x, vel_y)]
+#     """
+#     new_pos = nodes[..., :2] + nodes[..., 2:4] * step_size + 0.5 * acceleration * step_size ** 2
+#     new_vel = nodes[..., 2:4] + acceleration * step_size
+#     return new_pos, new_vel
 
 
 def remap_pbc(xlo, xhi, pos):
@@ -409,38 +414,39 @@ def apply_noise(graph, edge_noise_level):
 
 
 # TODO possibly remove - now using autograd for force calculation
-def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
-    """Compute the forces per bond (edge) for a system at time t
+# ! Not called
+# def compute_forces(receiver_nodes, sender_nodes, edge, rc, LX, func):
+#     """Compute the forces per bond (edge) for a system at time t
 
-    Forces are a function of distance and parameterized by a potential (func). Periodic boundary conditions are
-    assumed, thus the closest periodic image of each node is used calculate distance.
+#     Forces are a function of distance and parameterized by a potential (func). Periodic boundary conditions are
+#     assumed, thus the closest periodic image of each node is used calculate distance.
 
-    :param receiver_nodes: Tensor of indices of receiver nodes
-    :param sender_nodes: Tensor of indices of sender nodes
-    :param edge: Tensor of shape [num_edges x num_edge_features] that parameterize func (for Morse, num_edge_features=3)
-    :param rc: float; cutoff distance to ignore force contribution
-    :param LX: np.array([width, height]) of system
-    :param func: gradient of potential used to calculate the forces, signature should accept a Tensor which
-            parameterizes each bond
-    :return: Tensor of shape [num_edges x 2]; acceleration vector (a_x, a_y) for each edge.
-    """
-    # find the distance between each node in an edge (implement the closest periodic image of j)
-    diff = receiver_nodes[..., 0:2] - sender_nodes[..., 0:2]
-    diffs = list()
-    for i in range(2):
-        p_x = diff[..., i] - LX * tf.math.rint(diff[..., i] / LX)
-        diffs.append(p_x)
-    diff = tf.stack(diffs, axis=-1)
-    x = tf.norm(diff, axis=-1, keepdims=True)
-    xhat = diff / x
+#     :param receiver_nodes: Tensor of indices of receiver nodes
+#     :param sender_nodes: Tensor of indices of sender nodes
+#     :param edge: Tensor of shape [num_edges x num_edge_features] that parameterize func (for Morse, num_edge_features=3)
+#     :param rc: float; cutoff distance to ignore force contribution
+#     :param LX: np.array([width, height]) of system
+#     :param func: gradient of potential used to calculate the forces, signature should accept a Tensor which
+#             parameterizes each bond
+#     :return: Tensor of shape [num_edges x 2]; acceleration vector (a_x, a_y) for each edge.
+#     """
+#     # find the distance between each node in an edge (implement the closest periodic image of j)
+#     diff = receiver_nodes[..., 0:2] - sender_nodes[..., 0:2]
+#     diffs = list()
+#     for i in range(2):
+#         p_x = diff[..., i] - LX * tf.math.rint(diff[..., i] / LX)
+#         diffs.append(p_x)
+#     diff = tf.stack(diffs, axis=-1)
+#     x = tf.norm(diff, axis=-1, keepdims=True)
+#     xhat = diff / x
 
-    # compute force
-    bond = tf.concat([edge, x], axis=-1)
-    force_magnitude = func(bond)
-    force = force_magnitude * xhat
-    mask = tf.cast(x < rc, dtype=tf.float64)
-    force = force * mask
-    return force
+#     # compute force
+#     bond = tf.concat([edge, x], axis=-1)
+#     force_magnitude = func(bond)
+#     force = force_magnitude * xhat
+#     mask = tf.cast(x < rc, dtype=tf.float64)
+#     force = force * mask
+#     return force
 
 
 # TODO possibly modify the name or description and function variable names
@@ -592,6 +598,7 @@ def compute_energy_pairwise_ind(receiver_positions, sender_positions, edge, rc, 
 
 
 # TODO preprocess_pairwise does not really do much, it is just a little 3 line convenience, but how often is it called?
+# The function is called in integration and acceleration
 def preprocess_pairwise(graph, next_position):
     """Process the data to compute energies
 
@@ -983,93 +990,94 @@ def rollout_dynamics(simulator, graph, steps, seq_length):
 
 
 # TODO I think this was used for troubleshooting, can probably be archived/removed
-def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
-    """Apply some number of Molecular Dynamics steps to an interaction network
+# ! Not called. archived
+# def rollout_dynamics_per_edge(simulator, graph, steps, seq_length):
+#     """Apply some number of Molecular Dynamics steps to an interaction network
 
 
 
-    :param simulator: A MolecularDynamicsSimulatorGraph, or some module or callable with the same signature
-    :param graph: a GraphsTuple having, for some integers N, E, G, Z:
-                - nodes: N x 5 Tensor of [x_x, x_y, v_x, v_y, mass] for each atom (node)
-                - edges: E x Z Tensor of [Z_1, Z_2, ..., Z_Z] for Z features which parameterize the force potential
-    :param steps: int; length of trajectory
-    :param seq_length: int; number of previous states to include for the input, i.e.
-                nodes_t, nodes_t-1, ..., nodes_t-seq_length
-    :return: g: GraphsTuple of the input graph but with noise applied
-    :return: energy_per_edge: arraylike [steps+1 x E x 1]  of the interaction energies for each step
-    :return: accelerations_per_step: arraylike [steps+1 x E x 2]  of the acceleration contribution of each interaction
-                at each step
-    """
+#     :param simulator: A MolecularDynamicsSimulatorGraph, or some module or callable with the same signature
+#     :param graph: a GraphsTuple having, for some integers N, E, G, Z:
+#                 - nodes: N x 5 Tensor of [x_x, x_y, v_x, v_y, mass] for each atom (node)
+#                 - edges: E x Z Tensor of [Z_1, Z_2, ..., Z_Z] for Z features which parameterize the force potential
+#     :param steps: int; length of trajectory
+#     :param seq_length: int; number of previous states to include for the input, i.e.
+#                 nodes_t, nodes_t-1, ..., nodes_t-seq_length
+#     :return: g: GraphsTuple of the input graph but with noise applied
+#     :return: energy_per_edge: arraylike [steps+1 x E x 1]  of the interaction energies for each step
+#     :return: accelerations_per_step: arraylike [steps+1 x E x 2]  of the acceleration contribution of each interaction
+#                 at each step
+#     """
 
-    def body(t, graph, nodes_per_step, energy_per_edge, acc_per_edge):
-        """dynamics step to be used with tf.while_loop
+#     def body(t, graph, nodes_per_step, energy_per_edge, acc_per_edge):
+#         """dynamics step to be used with tf.while_loop
 
-        Provided the system at step t-1, predict the state at step t following the dynamics provided by the simulator.
-        The inputs processing should follow closely to that in train_md._preprocess. That function cannot be used here
-        due to the use of the TensorArray object which has different indexing properties.
+#         Provided the system at step t-1, predict the state at step t following the dynamics provided by the simulator.
+#         The inputs processing should follow closely to that in train_md._preprocess. That function cannot be used here
+#         due to the use of the TensorArray object which has different indexing properties.
 
-        :param t: int; timestep
-        :param graph: see above
-        :param nodes_per_step: TensorArray defined below which will hold the predicted positions and velocities
-        :param accelerations_per_step: TensorArray defined below which will hold the predicted accelerations
-        :return: t+1: int; the next step
-        :return: graph: GraphsTuple; updated system
-        :return: nodes_per_step: TensorArray updated at time t
-        :return: accelerations_per_step: TensorArray updated at time t
-        """
-        # get sequence of positions and velocities
-        mask_sequence = np.arange(t - seq_length, t, dtype=np.int32)
-        mask_sequence[mask_sequence < 0] = 0  # if the sequence goes into negative times, just append the initial state
-        position_velocity_sequence = nodes_per_step.gather(mask_sequence)  # apply the mask to the nodes
-        position_velocity_sequence = tf.transpose(position_velocity_sequence, [1, 0, 2])  # axes need to match simulator
-        velocity_sequence = position_velocity_sequence[:, :, 2:-1]  # get velocity sequence which will be 'flattened'
+#         :param t: int; timestep
+#         :param graph: see above
+#         :param nodes_per_step: TensorArray defined below which will hold the predicted positions and velocities
+#         :param accelerations_per_step: TensorArray defined below which will hold the predicted accelerations
+#         :return: t+1: int; the next step
+#         :return: graph: GraphsTuple; updated system
+#         :return: nodes_per_step: TensorArray updated at time t
+#         :return: accelerations_per_step: TensorArray updated at time t
+#         """
+#         # get sequence of positions and velocities
+#         mask_sequence = np.arange(t - seq_length, t, dtype=np.int32)
+#         mask_sequence[mask_sequence < 0] = 0  # if the sequence goes into negative times, just append the initial state
+#         position_velocity_sequence = nodes_per_step.gather(mask_sequence)  # apply the mask to the nodes
+#         position_velocity_sequence = tf.transpose(position_velocity_sequence, [1, 0, 2])  # axes need to match simulator
+#         velocity_sequence = position_velocity_sequence[:, :, 2:-1]  # get velocity sequence which will be 'flattened'
 
-        # spread the history of velocities for each node as node features
-        # they are spread such that the latest velocities are along the right most columns
-        velocity_sequence = tf.reshape(velocity_sequence, (velocity_sequence.shape[0], -1))
+#         # spread the history of velocities for each node as node features
+#         # they are spread such that the latest velocities are along the right most columns
+#         velocity_sequence = tf.reshape(velocity_sequence, (velocity_sequence.shape[0], -1))
 
-        # rewrite graph nodes for use in the simulator
-        new_nodes = tf.concat([
-            graph.nodes[:, :2], velocity_sequence, graph.nodes[:, 4:5]
-        ], axis=-1)
-        graph = graph.replace(nodes=new_nodes)
+#         # rewrite graph nodes for use in the simulator
+#         new_nodes = tf.concat([
+#             graph.nodes[:, :2], velocity_sequence, graph.nodes[:, 4:5]
+#         ], axis=-1)
+#         graph = graph.replace(nodes=new_nodes)
 
-        # predicted next position with simulator
-        predicted_pos_vel = simulator(graph)
-        if isinstance(predicted_pos_vel, list):
-            # TODO investigate below, check the model architecture
-            # i think this is necessary for when there are many processing steps, but not entirely sure
-            predicted_pos_vel = predicted_pos_vel[-1]
+#         # predicted next position with simulator
+#         predicted_pos_vel = simulator(graph)
+#         if isinstance(predicted_pos_vel, list):
+#             # TODO investigate below, check the model architecture
+#             # i think this is necessary for when there are many processing steps, but not entirely sure
+#             predicted_pos_vel = predicted_pos_vel[-1]
 
-        # update graph with next state
-        graph = graph.replace(nodes=tf.concat([
-            predicted_pos_vel, graph.nodes[..., 4:5]], axis=-1))
+#         # update graph with next state
+#         graph = graph.replace(nodes=tf.concat([
+#             predicted_pos_vel, graph.nodes[..., 4:5]], axis=-1))
 
-        return t + 1, graph, nodes_per_step.write(t, graph.nodes), \
-            energy_per_edge.write(t, simulator._energies), acc_per_edge.write(t, simulator._force_per_edge)
+#         return t + 1, graph, nodes_per_step.write(t, graph.nodes), \
+#             energy_per_edge.write(t, simulator._energies), acc_per_edge.write(t, simulator._force_per_edge)
 
-    energy_per_edge = tf.TensorArray(
-        dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 1)
-    )
-    acc_per_edge = tf.TensorArray(
-        dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 2)
-    )
-    nodes_per_step = tf.TensorArray(
-        dtype=graph.nodes.dtype, size=steps + 1, element_shape=graph.nodes.shape
-    )
-    energy_per_edge = energy_per_edge.write(0, simulator._energies)
-    nodes_per_step = nodes_per_step.write(0, graph.nodes)
-    acc_per_edge = acc_per_edge.write(0, simulator._force_per_edge)
+#     energy_per_edge = tf.TensorArray(
+#         dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 1)
+#     )
+#     acc_per_edge = tf.TensorArray(
+#         dtype=graph.edges.dtype, size=steps + 1, element_shape=(graph.edges.shape[0], 2)
+#     )
+#     nodes_per_step = tf.TensorArray(
+#         dtype=graph.nodes.dtype, size=steps + 1, element_shape=graph.nodes.shape
+#     )
+#     energy_per_edge = energy_per_edge.write(0, simulator._energies)
+#     nodes_per_step = nodes_per_step.write(0, graph.nodes)
+#     acc_per_edge = acc_per_edge.write(0, simulator._force_per_edge)
 
-    _, g, nodes_per_step, energy_per_edge, acc_per_edge = tf.while_loop(
-        lambda t, *unused_args: t <= steps,
-        body,
-        loop_vars=[1, graph, nodes_per_step, energy_per_edge, acc_per_edge]
-    )
-    return g, nodes_per_step.stack(), energy_per_edge.stack(), acc_per_edge.stack()
+#     _, g, nodes_per_step, energy_per_edge, acc_per_edge = tf.while_loop(
+#         lambda t, *unused_args: t <= steps,
+#         body,
+#         loop_vars=[1, graph, nodes_per_step, energy_per_edge, acc_per_edge]
+#     )
+#     return g, nodes_per_step.stack(), energy_per_edge.stack(), acc_per_edge.stack()
 
 
-# TODO homogenize varibale names with those found above in `rollout_dynamics`
+# TODO homogenize variable names with those found above in `rollout_dynamics`
 def generate_trajectory(simulator, graph, steps, edge_noise_level, seq_length):
     """Applies noise and then simulates a molecular dynamics simulation for a number of steps for invoking
     `rollout_dynamics`
@@ -1108,34 +1116,35 @@ def load_weights(model, weights_path):
 
 # TODO I don't think this is used anymore, it would be used in the `learned_simulators` classes, should confirm and
 #  remove
-@tf.function(reduce_retracing=True)
-def compute_n_edge(senders, n_node):
-    """ Compute the number of edges per graph in the batch
+# ! The only place called this func is commented. Archived
+# @tf.function(reduce_retracing=True)
+# def compute_n_edge(senders, n_node):
+#     """ Compute the number of edges per graph in the batch
 
-    After modifying the connections of the graph (such as when applying a cutoff), the number of edges ber batch must
-    be recomputed. With tf2, AutoGraph is able to compile control flow statements such as `if`, but must be wrapped
-    in a tf.function(). Reduce_retracing is required because the shape of the arguments is not consistent across calls.
+#     After modifying the connections of the graph (such as when applying a cutoff), the number of edges ber batch must
+#     be recomputed. With tf2, AutoGraph is able to compile control flow statements such as `if`, but must be wrapped
+#     in a tf.function(). Reduce_retracing is required because the shape of the arguments is not consistent across calls.
 
-    :param senders: Tensor of shape E, e.g. graph.senders
-    :param n_node: Tensor of shape B, where B is the batch size i.e. the number of graphs in the GraphsTuple. e.g.
-            graph.n_node. each value in n_node represents the number of nodes in each graph in the batch
-    :return: Tensor of shape B, updated number of edges in each graph after applying cutoffs
-    """
-    if tf.equal(tf.size(senders), 0):
-        return tf.zeros(1, dtype=tf.int64)
-    else:
-        cumsum = tf.math.cumsum(n_node)
-        diff1 = senders[:, None] < cumsum[None, :]
-        diff1 = tf.concat([diff1, tf.zeros((1, tf.size(cumsum)), dtype=tf.bool)], axis=0)
-        diff1 = tf.cast(diff1, tf.int16)
-        diff1 = diff1[:-1] - diff1[1:]
-        n = tf.experimental.numpy.nonzero(diff1)[0]
-        n = n + 1
-        n = tf.squeeze(tf.concat([tf.zeros((1, 1), dtype=tf.int64), n[:, None]], axis=0))
-        leading_diff = tf.cast(senders[0] < cumsum, dtype=tf.int64)
-        split_lo = tf.math.count_nonzero(leading_diff == 0)
-        diff2 = n[1:] - n[:-1]
-        return tf.concat([tf.zeros(split_lo, dtype=tf.int64), diff2], axis=0)
+#     :param senders: Tensor of shape E, e.g. graph.senders
+#     :param n_node: Tensor of shape B, where B is the batch size i.e. the number of graphs in the GraphsTuple. e.g.
+#             graph.n_node. each value in n_node represents the number of nodes in each graph in the batch
+#     :return: Tensor of shape B, updated number of edges in each graph after applying cutoffs
+#     """
+#     if tf.equal(tf.size(senders), 0):
+#         return tf.zeros(1, dtype=tf.int64)
+#     else:
+#         cumsum = tf.math.cumsum(n_node)
+#         diff1 = senders[:, None] < cumsum[None, :]
+#         diff1 = tf.concat([diff1, tf.zeros((1, tf.size(cumsum)), dtype=tf.bool)], axis=0)
+#         diff1 = tf.cast(diff1, tf.int16)
+#         diff1 = diff1[:-1] - diff1[1:]
+#         n = tf.experimental.numpy.nonzero(diff1)[0]
+#         n = n + 1
+#         n = tf.squeeze(tf.concat([tf.zeros((1, 1), dtype=tf.int64), n[:, None]], axis=0))
+#         leading_diff = tf.cast(senders[0] < cumsum, dtype=tf.int64)
+#         split_lo = tf.math.count_nonzero(leading_diff == 0)
+#         diff2 = n[1:] - n[:-1]
+#         return tf.concat([tf.zeros(split_lo, dtype=tf.int64), diff2], axis=0)
 
 
 def save_graph(graph, path):
