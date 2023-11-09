@@ -3,7 +3,8 @@ num_time_steps: 50
 training_set:
   batch_size: 512
   min_num_atoms: 3
-  max_num_atoms: 6
+  max_num_atoms: 8
+  p_size: 3
 test_set:
   batch_size: 20
   min_num_atoms: 2

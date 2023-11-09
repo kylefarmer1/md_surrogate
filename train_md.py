@@ -171,17 +171,27 @@ def train(args):
         num_dimensions, step_size, system_size, connectivity_radius, model_kwargs)
     simulator = utils_md.MolecularDynamicsSimulatorGraph(
         step_size=step_size, system_size=system_size, cutoff=connectivity_radius, integrator='verlet', potential='morse')
-
-    # load_path = 'models/md_2_5.00e+05_50_0.1_7/weights-1'
-    # utils_md.load_weights(model, load_path)
+    """
+    Losing potential parameterization, using Morse potential from data notebook
+    """
+    morse_parameterization = {}
+    for i in range(args.training_set.max_num_atoms):
+        j_dict = {}
+        for j in range(i, args.training_set.max_num_atoms+1):
+            noise = np.random.uniform(low=-0.1, high=0.2, size=(args.training_set.p_size,))
+            j_dict[str(j)] = np.ones(args.training_set.p_size) + noise
+        morse_parameterization[str(i)] = j_dict
     # endregion Model definition
 
     # region Data
     # region train set
+
+
     static_graph_tr, num_atoms_tr = gen_data(
-        args.training_set.batch_size, args.training_set.min_num_atoms, args.training_set.max_num_atoms + 1, system_size)
+        args.training_set.batch_size, args.training_set.min_num_atoms, args.training_set.max_num_atoms + 1, system_size, morse_parameterization)
     base_graph_tr = utils_tf.data_dicts_to_graphs_tuple(static_graph_tr)
-    simulator._acceleration = simulator.get_step_accelerations(base_graph_tr, base_graph_tr.nodes[..., :2])
+    # simulator._acceleration = simulator.get_step_accelerations(base_graph_tr, base_graph_tr.nodes[..., :2])
+    simulator._acceleration = simulator.get_step_accelerations(base_graph_tr)
     initial_conditions_tr, true_trajectory_tr, true_accelerations_tr = utils_md.generate_trajectory(
         simulator,
         base_graph_tr,
@@ -199,9 +209,10 @@ def train(args):
 
     # region test set
     static_graph_ge, num_atoms_ge = gen_data(args.training_set.batch_size, args.training_set.min_num_atoms,
-                                             args.training_set.max_num_atoms + 1, system_size)
+                                             args.training_set.max_num_atoms + 1, system_size, morse_parameterization)
     base_graph_ge = utils_tf.data_dicts_to_graphs_tuple(static_graph_ge)
-    simulator._acceleration = simulator.get_step_accelerations(base_graph_ge, base_graph_ge.nodes[..., :2])
+    # simulator._acceleration = simulator.get_step_accelerations(base_graph_ge, base_graph_ge.nodes[..., :2])
+    simulator._acceleration = simulator.get_step_accelerations(base_graph_ge)
     initial_conditions_ge, true_trajectory_ge, true_accelerations_ge = utils_md.generate_trajectory(
         simulator,
         base_graph_ge,
@@ -218,7 +229,8 @@ def train(args):
     def update_step(graph, next_positions, target_accelerations):
 
         with tf.GradientTape() as tape:
-            pred_accelerations = model.get_step_accelerations(graph, next_positions)
+            # pred_accelerations = model.get_step_accelerations(graph, next_positions)
+            pred_accelerations = model.get_step_accelerations(graph)
             loss_tr = create_loss(target_accelerations, pred_accelerations)
 
         gradients = tape.gradient(loss_tr, model.trainable_variables)
@@ -256,13 +268,15 @@ def train(args):
         inputs_pos_vel = preprocess_sequence(true_trajectory_tr, t + 1, seq_length)
         next_positions = true_trajectory_tr[t + 1, :, :2]
         graph = initial_conditions_tr.replace(nodes=inputs_pos_vel)
-        target_acceleration = simulator.get_step_accelerations(graph, next_positions)
+        # target_acceleration = simulator.get_step_accelerations(graph, next_positions)
+        target_acceleration = simulator.get_step_accelerations(graph)
         # set current acceleration from simulator
         # model._acceleration = simulator.get_step_accelerations(graph, true_trajectory_tr[t, :, :2])
         outputs_tr, loss_tr = compiled_update_step(graph, next_positions, target_acceleration)
         if iteration % args.log_increment == 0:
-            model._acceleration = simulator.get_step_accelerations(initial_conditions_ge,
-                                                                   initial_conditions_ge.nodes[..., :2])
+            # model._acceleration = simulator.get_step_accelerations(initial_conditions_ge,
+            #                                                        initial_conditions_ge.nodes[..., :2])
+            model._acceleration = simulator.get_step_accelerations(initial_conditions_ge)
             _, predicted_nodes_rollout_ge, pred_accelerations = utils_md.rollout_dynamics(
                 model, initial_conditions_ge,  num_time_steps, seq_length)
 
@@ -290,4 +304,6 @@ if __name__ == '__main__':
     arg_parser = Arguments()
     args = arg_parser.parse_args()
     Arguments().print_args(args)
+    # print('test: ', args.latent_size)
+    # print('test2: ', args.training_set.batch_size)
     train(args)

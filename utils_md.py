@@ -306,13 +306,14 @@ def aggregate(force_per_edge, senders, num_nodes):
     :param num_nodes: Tensor of shape N where N should be the sum of unique values in receivers
     :return: Tensor of shape N x 2 [f_x, f_y]
     """
-    _aggregator = tf.math.unsorted_segment_sum
-    spring_force_per_node = _aggregator(force_per_edge, senders, num_nodes)
+    # _aggregator = tf.math.unsorted_segment_sum
+    # spring_force_per_node = _aggregator(force_per_edge, senders, num_nodes)
 
     # newtons third law
     #spring_force_per_node -= _aggregator(force_per_edge, receivers, num_nodes)
 
-    return spring_force_per_node
+
+    return tf.math.unsorted_segment_sum(force_per_edge, senders, num_nodes)
 
 
 # TODO revisit - purpose of adding noise? Improve training. Where/how is noise best applied? See comments in func
